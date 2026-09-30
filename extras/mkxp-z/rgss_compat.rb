@@ -107,3 +107,30 @@ class Win32API
     end
   end
 end
+
+# Development aid: MKXP_DEBUG_SHOT=<file.png>,<frame> saves the picture at that frame and logs the frame count now and
+# then, which shows whether a game is drawing, waiting or stuck.
+if ENV['MKXP_DEBUG_SHOT']
+  path, frame = ENV['MKXP_DEBUG_SHOT'].split(',')
+  $__shot_path = path
+  $__shot_frame = frame.to_i
+  module Graphics
+    class << self
+      alias_method :__shot_update, :update
+
+      def update
+        __shot_update
+        n = Graphics.frame_count
+        STDERR.puts "frame #{n}" if n % 120 == 0
+        if n == $__shot_frame
+          begin
+            Graphics.snap_to_bitmap.to_file($__shot_path)
+            STDERR.puts "picture saved: #{$__shot_path}"
+          rescue => e
+            STDERR.puts "picture not saved: #{e}"
+          end
+        end
+      end
+    end
+  end
+end
