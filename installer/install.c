@@ -278,9 +278,39 @@ install_app(const char* title_id, const char* dir) {
 }
 
 
+/* Whether the file already has exactly this content. */
+static int
+file_matches(const char* path, const uint8_t* data, size_t size) {
+  FILE* f;
+  uint8_t* buf;
+  size_t n;
+  int same = 0;
+
+  if(!(f=fopen(path, "rb"))) {
+    return 0;
+  }
+  if((buf=malloc(size+1))) {
+    n = fread(buf, 1, size+1, f);
+    same = (n == size && !memcmp(buf, data, size));
+    free(buf);
+  }
+  fclose(f);
+  return same;
+}
+
+
 static int
 install_tile(void) {
   int err;
+
+  /* Registering a tile makes the console refresh its list of installed apps, which can blank other games' icons for a
+   * while. Do it only when the tile is new or has changed. */
+  if(file_matches("/user/app/"TITLE_ID"/launch.html", launch, launch_size) &&
+     file_matches("/user/app/"TITLE_ID"/sce_sys/icon0.png", icon0, icon0_size) &&
+     file_matches("/user/app/"TITLE_ID"/sce_sys/param.json", param, param_size)) {
+    printf("the home screen tile is up to date\n");
+    return 0;
+  }
 
   if((err=sceAppInstUtilInitialize())) {
     printf("sceAppInstUtilInitialize: error 0x%08X\n", err);
