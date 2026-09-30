@@ -1,0 +1,41 @@
+pkgname=ps5-payload-fluidsynth-tsf
+pkgver=1
+pkgrel=1
+pkgdesc='FluidSynth API subset for mkxp-z (MIDI), implemented with TinySoundFont'
+arch=('any')
+url='https://github.com/schellingb/TinySoundFont'
+license=('MIT')
+options=(!strip libtool staticlibs)
+_tsf_commit=853a0a171759f1ddba0de1442133a75912bbeffa
+source=("tsf.h::https://raw.githubusercontent.com/schellingb/TinySoundFont/${_tsf_commit}/tsf.h"
+        'fluid_tsf.c'
+        'fluidsynth.h'
+        'fluidsynth.pc')
+sha256sums=('70d55963c98f60ebb81518eaa1f25d46888d5180eb5f5289fd6b74ffc177d197'
+            'SKIP'
+            'SKIP'
+            'SKIP')
+groups=('ps5-payload-dev')
+makedepends=('ps5-payload-sdk')
+
+prepare() {
+    if [ -z "${PS5_PAYLOAD_SDK}" ]; then
+	export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
+    fi
+}
+
+build() {
+    source "${PS5_PAYLOAD_SDK}/toolchain/prospero.sh"
+
+    ${CC} -O2 -Wall -I. -c fluid_tsf.c -o fluid_tsf.o
+    ${AR} rcs libfluidsynth.a fluid_tsf.o
+}
+
+package() {
+    source "${PS5_PAYLOAD_SDK}/toolchain/prospero.sh"
+    local root="${pkgdir}/${PS5_PAYLOAD_SDK}/target/user/homebrew"
+
+    install -Dm644 libfluidsynth.a "${root}/lib/libfluidsynth.a"
+    install -Dm644 fluidsynth.h "${root}/include/fluidsynth.h"
+    install -Dm644 fluidsynth.pc "${root}/lib/pkgconfig/fluidsynth.pc"
+}

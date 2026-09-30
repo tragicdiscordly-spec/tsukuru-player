@@ -1,0 +1,45 @@
+pkgname=ps5-payload-sdl_sound
+pkgver=2.0.4
+pkgrel=1
+pkgdesc='Audio file decoding library for SDL2 (used by mkxp-z)'
+arch=('any')
+url='https://icculus.org/SDL_sound/'
+license=('zlib')
+options=(!strip libtool staticlibs)
+source=("SDL_sound-$pkgver.tar.gz::https://github.com/icculus/SDL_sound/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('6f8b324ce23382929ab90ded7fcd6e303b66cb22b4e15b4e3c3a99f500a4eec1')
+groups=('ps5-payload-dev')
+depends=('ps5-payload-sdl2' 'ps5-payload-libvorbis' 'ps5-payload-libogg' 'ps5-payload-flac' 'ps5-payload-mpg123')
+makedepends=('ps5-payload-sdk')
+
+prepare() {
+    if [ -z "${PS5_PAYLOAD_SDK}" ]; then
+	export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
+    fi
+}
+
+build() {
+    source "${PS5_PAYLOAD_SDK}/toolchain/prospero.sh"
+    cd SDL_sound-$pkgver
+
+    ${CMAKE} -DCMAKE_BUILD_TYPE=Release \
+	     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+	     -DSDLSOUND_BUILD_SHARED=OFF \
+	     -DSDLSOUND_BUILD_STATIC=ON \
+	     -DSDLSOUND_BUILD_TEST=OFF \
+	     -DSDLSOUND_BUILD_DOCS=OFF \
+	     -DSDLSOUND_DECODER_MIDI=OFF \
+	     -B build \
+	     -S .
+    ${MAKE} -C build
+}
+
+package() {
+    source "${PS5_PAYLOAD_SDK}/toolchain/prospero.sh"
+    cd SDL_sound-$pkgver
+
+    export DESTDIR="${pkgdir}/${DESTDIR}"
+    ${MAKE} -C build install
+
+    ${PS5_CROSS_FIX_ROOT} "${DESTDIR}/${PREFIX}"
+}

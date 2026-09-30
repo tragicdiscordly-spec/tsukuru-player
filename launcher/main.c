@@ -1,0 +1,947 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (c) 2026 the PS5 port contributors */
+/* RPG Maker launcher for the PS5.
+ *
+ * Lists the game folders found in /data/games and on USB sticks ("games" folder), works out which
+ * RPG Maker generation each one is from its files, and starts the matching engine through the
+ * websrv launcher API (http://127.0.0.1:8080/hbldr):
+ *
+ *   RPG Maker 2000 / 2003   ->  EasyRPG Player   (/data/homebrew/easyrpg)
+ *   RPG Maker XP / VX / Ace ->  mkxp-z           (/data/homebrew/mkxp-z)
+ *
+ * Controls: D-pad/left stick move, Cross starts the game, Triangle rescans, L1/R1 page up/down.
+ *
+ * Copyright (C) 2026 the easyrpg-ps5 authors. GPLv3 or later.
+ */
+#include <arpa/inet.h>
+#include <dirent.h>
+#include <errno.h>
+#include <ifaddrs.h>
+#include <netinet/in.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <SDL.h>
+#include <SDL_ttf.h>
+
+#define SCREEN_W 1920
+#define SCREEN_H 1080
+
+#define FONT_PATH "/data/homebrew/rpgmaker/font.ttf"
+#define EASYRPG_ELF "/data/homebrew/easyrpg/eboot.elf"
+#define MKXP_ELF "/data/homebrew/mkxp-z/eboot.elf"
+#define OUTSIDER_DIR "/data/homebrew/outsider"
+#define OUTSIDER_ELF OUTSIDER_DIR "/eboot.elf"
+
+typedef enum {
+	ENGINE_EASYRPG,
+	ENGINE_XP,
+	ENGINE_VX,
+	ENGINE_ACE,
+	ENGINE_MZ,
+	ENGINE_MV,
+} Engine;
+
+static const char* engine_label(Engine e) {
+	switch (e) {
+	case ENGINE_EASYRPG: return "RPG Maker 2000/2003";
+	case ENGINE_XP: return "RPG Maker XP";
+	case ENGINE_VX: return "RPG Maker VX";
+	case ENGINE_ACE: return "RPG Maker VX Ace";
+	case ENGINE_MZ: return "RPG Maker MZ";
+	case ENGINE_MV: return "RPG Maker MV";
+	}
+	return "?";
+}
+
+typedef struct {
+	char name[256];
+	char path[600];
+	char root[600]; /* the folder the engine is given: the game folder, or its www folder for MV */
+	const char* where;
+	Engine engine;
+	char missing_rtp[128]; /* RTP names the game asks for that are not installed (XP/VX/Ace only) */
+} Game;
+
+static void collect_rtps(const char* dir, char* joined, size_t joined_size, char* missing, size_t missing_size);
+static void easyrpg_rtp_check(const char* dir, char* missing, size_t missing_size);
+
+#define MAX_GAMES 512
+static Game games[MAX_GAMES];
+static int game_count;
+
+/* --- this console's address (shown so that games can be added from a phone or PC) --- */
+
+static char local_ip[64];
+
+static void find_local_ip(void) {
+	local_ip[0] = '\0';
+	struct ifaddrs* list = NULL;
+	if (getifaddrs(&list) != 0) return;
+	for (struct ifaddrs* a = list; a; a = a->ifa_next) {
+		if (!a->ifa_addr || a->ifa_addr->sa_family != AF_INET) continue;
+		struct sockaddr_in* sin = (struct sockaddr_in*)a->ifa_addr;
+		const unsigned char* b = (const unsigned char*)&sin->sin_addr;
+		if (b[0] == 127 || (b[0] == 169 && b[1] == 254)) continue; /* loopback, self-assigned */
+		snprintf(local_ip, sizeof local_ip, "%u.%u.%u.%u", b[0], b[1], b[2], b[3]);
+		break;
+	}
+	freeifaddrs(list);
+}
+
+/* --- game detection --- */
+
+/* Finds an entry of `dir` whose name matches `name` ignoring case; copies the real name to `out`. */
+static int find_entry(const char* dir, const char* name, char* out, size_t out_size, unsigned char* type) {
+	DIR* d = opendir(dir);
+	if (!d) return 0;
+	int found = 0;
+	struct dirent* e;
+	while ((e = readdir(d))) {
+		if (!strcasecmp(e->d_name, name)) {
+			snprintf(out, out_size, "%s", e->d_name);
+			if (type) *type = e->d_type;
+			found = 1;
+			break;
+		}
+	}
+	closedir(d);
+	return found;
+}
+
+static int has_entry(const char* dir, const char* name) {
+	char tmp[256];
+	return find_entry(dir, name, tmp, sizeof tmp, NULL);
+}
+
+/* The value of `key` in the game's Game.ini ("Scripts", "RTP", ...). Keys are case-insensitive and
+ * may have spaces around the "=" ("scripts =Data\Scripts.rvdata2"). */
+static int ini_value_in(const char* dir, const char* file, const char* key, char* out, size_t out_size) {
+	char name[256], path[900];
+	if (!find_entry(dir, file, name, sizeof name, NULL)) return 0;
+	snprintf(path, sizeof path, "%s/%s", dir, name);
+	FILE* f = fopen(path, "r");
+	if (!f) return 0;
+	size_t key_len = strlen(key);
+	char line[512];
+	int found = 0;
+	while (fgets(line, sizeof line, f)) {
+		char* p = line;
+		while (*p == ' ' || *p == '\t') p++;
+		if (strncasecmp(p, key, key_len) != 0) continue;
+		p += key_len;
+		while (*p == ' ' || *p == '\t') p++;
+		if (*p != '=') continue;
+		p++;
+		while (*p == ' ' || *p == '\t') p++;
+		snprintf(out, out_size, "%s", p);
+		out[strcspn(out, "\r\n")] = '\0';
+		for (size_t n = strlen(out); n > 0 && (out[n - 1] == ' ' || out[n - 1] == '\t'); n--) out[n - 1] = '\0';
+		found = 1;
+		break;
+	}
+	fclose(f);
+	return found;
+}
+
+static int ini_value(const char* dir, const char* key, char* out, size_t out_size) {
+	return ini_value_in(dir, "Game.ini", key, out, out_size);
+}
+
+/* Like has_entry(), for a file inside a subfolder of `dir` ("js", "www/js"). Every name is matched ignoring
+ * case, since games made on Windows do not care about it. */
+static int has_entry_in(const char* dir, const char* sub, const char* name) {
+	char cur[700], comp[64], real[256];
+	snprintf(cur, sizeof cur, "%s", dir);
+	const char* p = sub;
+	while (*p) {
+		size_t n = strcspn(p, "/");
+		snprintf(comp, sizeof comp, "%.*s", (int)n, p);
+		if (!find_entry(cur, comp, real, sizeof real, NULL)) return 0;
+		size_t len = strlen(cur);
+		snprintf(cur + len, sizeof cur - len, "/%s", real);
+		p += n;
+		if (*p == '/') p++;
+	}
+	return has_entry(cur, name);
+}
+
+static int detect(const char* dir, Engine* engine) {
+	if (has_entry(dir, "RPG_RT.ldb") || has_entry(dir, "RPG_RT.lmt") || has_entry(dir, "EASY_RT.edb")) {
+		*engine = ENGINE_EASYRPG;
+		return 1;
+	}
+	char scripts[256];
+	if (ini_value(dir, "Scripts", scripts, sizeof scripts)) {
+		if (strcasestr(scripts, "rvdata2")) { *engine = ENGINE_ACE; return 1; }
+		if (strcasestr(scripts, "rvdata")) { *engine = ENGINE_VX; return 1; }
+		if (strcasestr(scripts, "rxdata")) { *engine = ENGINE_XP; return 1; }
+	}
+	if (has_entry(dir, "Game.rgss3a")) { *engine = ENGINE_ACE; return 1; }
+	if (has_entry(dir, "Game.rgss2a")) { *engine = ENGINE_VX; return 1; }
+	if (has_entry(dir, "Game.rgssad")) { *engine = ENGINE_XP; return 1; }
+	/* MZ: js/rmmz_core.js next to data/ and img/. MV: js/rpg_core.js, usually inside a www folder. */
+	if (has_entry_in(dir, "js", "rmmz_core.js")) { *engine = ENGINE_MZ; return 1; }
+	if (has_entry_in(dir, "js", "rpg_core.js") || has_entry_in(dir, "www/js", "rpg_core.js")) { *engine = ENGINE_MV; return 1; }
+	return 0;
+}
+
+/* The folder an MV game's scripts live in: "www" inside the game folder (desktop deployments), or the game
+ * folder itself (web deployments). */
+static void mv_root(const char* dir, char* out, size_t size) {
+	char real[256];
+	if (has_entry_in(dir, "www/js", "rpg_core.js") && find_entry(dir, "www", real, sizeof real, NULL)) {
+		snprintf(out, size, "%s/%s", dir, real);
+	} else {
+		snprintf(out, size, "%s", dir);
+	}
+}
+
+static int compare_games(const void* a, const void* b) {
+	return strcasecmp(((const Game*)a)->name, ((const Game*)b)->name);
+}
+
+/* Looks for games below `dir`. Downloaded games are often wrapped in an extra folder (with a readme
+ * next to the real game folder), so search up to `depth` levels. `rel` is the path shown in the list. */
+static void scan_dir(const char* dir, const char* rel, const char* where, int depth) {
+	DIR* d = opendir(dir);
+	if (!d) return;
+	struct dirent* e;
+	while ((e = readdir(d)) && game_count < MAX_GAMES) {
+		if (e->d_name[0] == '.' || e->d_type != DT_DIR) continue;
+		char path[600], name[256];
+		snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
+		snprintf(name, sizeof name, "%s%s%s", rel, rel[0] ? " / " : "", e->d_name);
+		Game* g = &games[game_count];
+		if (detect(path, &g->engine)) {
+			snprintf(g->path, sizeof g->path, "%s", path);
+			if (g->engine == ENGINE_MV) mv_root(path, g->root, sizeof g->root);
+			else snprintf(g->root, sizeof g->root, "%s", path);
+			snprintf(g->name, sizeof g->name, "%s", name);
+			g->where = where;
+			g->missing_rtp[0] = '\0';
+			if (g->engine == ENGINE_XP || g->engine == ENGINE_VX || g->engine == ENGINE_ACE) {
+				char joined[1500];
+				collect_rtps(path, joined, sizeof joined, g->missing_rtp, sizeof g->missing_rtp);
+			} else if (g->engine == ENGINE_EASYRPG) {
+				easyrpg_rtp_check(path, g->missing_rtp, sizeof g->missing_rtp);
+			}
+			game_count++;
+		} else if (depth > 1) {
+			scan_dir(path, name, where, depth - 1);
+		}
+	}
+	closedir(d);
+}
+
+static void scan_root(const char* root, const char* where) {
+	scan_dir(root, "", where, 2);
+}
+
+static void scan_games(void) {
+	game_count = 0;
+	char root[64];
+	for (int i = 0; i < 8; i++) {
+		snprintf(root, sizeof root, "/mnt/usb%d/games", i);
+		scan_root(root, "USB");
+	}
+	scan_root("/data/games", "Console");
+	qsort(games, game_count, sizeof(Game), compare_games);
+}
+
+/* --- starting a game through websrv --- */
+
+/* websrv splits arguments and environment on spaces; a backslash keeps a space (or a backslash) in. */
+static void escape_arg(const char* in, char* out, size_t size) {
+	size_t o = 0;
+	for (; *in && o + 2 < size; in++) {
+		if (*in == ' ' || *in == '\\') out[o++] = '\\';
+		out[o++] = *in;
+	}
+	out[o] = '\0';
+}
+
+static void url_encode(const char* in, char* out, size_t size) {
+	static const char hex[] = "0123456789ABCDEF";
+	size_t o = 0;
+	for (; *in && o + 4 < size; in++) {
+		unsigned char c = (unsigned char)*in;
+		if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+		    c == '.' || c == '/') {
+			out[o++] = (char)c;
+		} else {
+			out[o++] = '%';
+			out[o++] = hex[c >> 4];
+			out[o++] = hex[c & 15];
+		}
+	}
+	out[o] = '\0';
+}
+
+static int http_get(const char* target, char* status, size_t status_size) {
+	int fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (fd < 0) return -1;
+	struct sockaddr_in addr;
+	memset(&addr, 0, sizeof addr);
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(8080);
+	addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	if (connect(fd, (struct sockaddr*)&addr, sizeof addr) < 0) {
+		snprintf(status, status_size, "cannot reach the web launcher on port 8080 (%s). Run start-ps5.bat on your PC.",
+		         strerror(errno));
+		close(fd);
+		return -1;
+	}
+	char req[13000];
+	int n = snprintf(req, sizeof req, "GET %s HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n", target);
+	send(fd, req, n, 0);
+	char buf[256] = {0};
+	recv(fd, buf, sizeof buf - 1, 0); /* the launcher is usually killed before it can answer */
+	close(fd);
+	snprintf(status, status_size, "%.60s", buf);
+	return 0;
+}
+
+/* --- RTP: RPG Maker's shared default graphics and sounds ---
+ * Expected in /data/rtp/<name> (or rtp/<name> on a USB stick): "2000" and "2003" for EasyRPG, and
+ * the name a game asks for in Game.ini for mkxp-z ("Standard" for XP, "RPGVX", "RPGVXAce"). */
+static int find_rtp(const char* name, char* out, size_t size) {
+	char root[64], real[256];
+	unsigned char type = 0;
+	for (int i = 0; i < 9; i++) {
+		if (i < 8) snprintf(root, sizeof root, "/mnt/usb%d/rtp", i);
+		else snprintf(root, sizeof root, "/data/rtp");
+		if (find_entry(root, name, real, sizeof real, &type) && type == DT_DIR) {
+			snprintf(out, size, "%s/%s", root, real);
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/* The SoundFont used for MIDI music in XP/VX/Ace games: the first .sf2 in "soundfonts" on a USB
+ * stick or in /data/soundfonts. Without one MIDI music is silent. */
+static int find_soundfont(char* out, size_t size) {
+	char root[64];
+	for (int i = 0; i < 9; i++) {
+		if (i < 8) snprintf(root, sizeof root, "/mnt/usb%d/soundfonts", i);
+		else snprintf(root, sizeof root, "/data/soundfonts");
+		DIR* d = opendir(root);
+		if (!d) continue;
+		struct dirent* e;
+		while ((e = readdir(d))) {
+			size_t len = strlen(e->d_name);
+			if (len > 4 && !strcasecmp(e->d_name + len - 4, ".sf2")) {
+				snprintf(out, size, "%s/%s", root, e->d_name);
+				closedir(d);
+				return 1;
+			}
+		}
+		closedir(d);
+	}
+	return 0;
+}
+
+/* The RTPs an XP/VX/Ace game names in Game.ini (RTP, RTP1, RTP2, RTP3): the folders found go into
+ * `joined` (separated by ':'), the names that are not installed into `missing`. */
+static void collect_rtps(const char* dir, char* joined, size_t joined_size, char* missing, size_t missing_size) {
+	static const char* const keys[] = {"RTP", "RTP1", "RTP2", "RTP3"};
+	joined[0] = missing[0] = '\0';
+	for (int i = 0; i < 4; i++) {
+		char name[128], path[600];
+		if (!ini_value(dir, keys[i], name, sizeof name) || !name[0]) continue;
+		if (find_rtp(name, path, sizeof path)) {
+			size_t len = strlen(joined);
+			snprintf(joined + len, joined_size - len, "%s%s", len ? ":" : "", path);
+		} else {
+			size_t len = strlen(missing);
+			snprintf(missing + len, missing_size - len, "%s%s", len ? ", " : "", name);
+		}
+	}
+}
+
+/* RPG Maker 2000/2003 games say in RPG_RT.ini whether they carry the RTP files themselves
+ * (FullPackageFlag=1). If they do not, and neither RTP is installed, the game probably misses graphics or
+ * sounds: `missing` gets "2000 or 2003" (which of the two depends on the RPG Maker the game was made with). */
+static void easyrpg_rtp_check(const char* dir, char* missing, size_t missing_size) {
+	char value[32], path[600];
+	missing[0] = '\0';
+	if (ini_value_in(dir, "RPG_RT.ini", "FullPackageFlag", value, sizeof value) && value[0] == '1') return;
+	if (find_rtp("2000", path, sizeof path) || find_rtp("2003", path, sizeof path)) return;
+	snprintf(missing, missing_size, "2000 or 2003");
+}
+
+/* Returns 0 when the engine was started, -1 on error and 1 when the game needs an RTP that is not
+ * installed and `confirmed` is not set (the caller asks the player to press Cross again). */
+static int start_game(const Game* g, int confirmed, char* message, size_t message_size) {
+	int web_engine = g->engine == ENGINE_MZ || g->engine == ENGINE_MV; /* MV and MZ run on the same runtime */
+	const char* elf = g->engine == ENGINE_EASYRPG ? EASYRPG_ELF : web_engine ? OUTSIDER_ELF : MKXP_ELF;
+	const char* engine_name = g->engine == ENGINE_EASYRPG ? "EasyRPG Player" : web_engine ? "Outsider" : "mkxp-z";
+	if (access(elf, F_OK) != 0) {
+		snprintf(message, message_size, "%s is not installed (%s is missing).", engine_name, elf);
+		return -1;
+	}
+
+	char path_esc[1200], args[1400], env[2600];
+	escape_arg(web_engine ? g->root : g->path, path_esc, sizeof path_esc);
+	args[0] = env[0] = '\0';
+	if (g->engine == ENGINE_EASYRPG) {
+		if (g->missing_rtp[0] && !confirmed) {
+			snprintf(message, message_size,
+			         "This game probably needs the RTP \"2000\" or \"2003\" (the one for the RPG Maker it was made with), which is not "
+			         "installed. Put that folder into a folder named \"rtp\" on your USB stick (or /data/rtp). Press Cross again to start anyway.");
+			return 1;
+		}
+		snprintf(args, sizeof args, "--project-path %s", path_esc);
+		snprintf(env, sizeof env, "HOME=/data/homebrew/easyrpg");
+		char rtp[600], rtp_esc[1200];
+		if (find_rtp("2000", rtp, sizeof rtp)) {
+			escape_arg(rtp, rtp_esc, sizeof rtp_esc);
+			size_t len = strlen(env);
+			snprintf(env + len, sizeof env - len, " RPG2K_RTP_PATH=%s", rtp_esc);
+		}
+		if (find_rtp("2003", rtp, sizeof rtp)) {
+			escape_arg(rtp, rtp_esc, sizeof rtp_esc);
+			size_t len = strlen(env);
+			snprintf(env + len, sizeof env - len, " RPG2K3_RTP_PATH=%s", rtp_esc);
+		}
+	} else if (web_engine) {
+		/* MV and MZ games: the runtime needs no RTP. Names in the game are matched ignoring case (Windows games
+		 * rely on that) and encrypted images and sounds are decrypted as they are read. */
+		snprintf(args, sizeof args, "--game %s --shims " OUTSIDER_DIR "/shims --perf 600", path_esc);
+		snprintf(env, sizeof env, "HOME=" OUTSIDER_DIR " PS5PATH_CASE_INSENSITIVE=1");
+	} else {
+		char joined[1500], missing[300], joined_esc[3000];
+		collect_rtps(g->path, joined, sizeof joined, missing, sizeof missing);
+		if (missing[0] && !confirmed) {
+			snprintf(message, message_size,
+			         "This game needs the RTP \"%s\", which is not installed. Put the folder \"%s\" into a folder named \"rtp\" on your USB stick "
+			         "(or /data/rtp). Press Cross again to start anyway.",
+			         missing, missing);
+			return 1;
+		}
+		snprintf(env, sizeof env, "HOME=/data/homebrew/mkxp-z SRCDIR=%s", path_esc);
+		if (joined[0]) {
+			escape_arg(joined, joined_esc, sizeof joined_esc);
+			size_t len = strlen(env);
+			snprintf(env + len, sizeof env - len, " MKXP_RTP=%s", joined_esc);
+		}
+		char soundfont[600], sf_esc[1200];
+		if (find_soundfont(soundfont, sizeof soundfont)) {
+			escape_arg(soundfont, sf_esc, sizeof sf_esc);
+			size_t len = strlen(env);
+			snprintf(env + len, sizeof env - len, " MKXP_SOUNDFONT=%s", sf_esc);
+		}
+	}
+
+	char elf_url[256], args_url[3000], env_url[8000], target[12000];
+	url_encode(elf, elf_url, sizeof elf_url);
+	url_encode(args, args_url, sizeof args_url);
+	url_encode(env, env_url, sizeof env_url);
+	snprintf(target, sizeof target, "/hbldr?path=%s&args=%s&env=%s", elf_url, args_url, env_url);
+
+	char status[128];
+	if (http_get(target, status, sizeof status) < 0) {
+		snprintf(message, message_size, "Could not start %s: %s", engine_name, status);
+		return -1;
+	}
+	snprintf(message, message_size, "Starting %s ...", engine_name);
+	return 0;
+}
+
+/* --- settings (button mapping for RPG Maker MV and MZ games and a few options) --- */
+
+/* The file the launcher writes and the MZ runtime (Outsider) reads at start-up. */
+#define SETTINGS_PATH "/data/homebrew/outsider/settings.ini"
+
+/* What a pad button can be assigned to: a "virtual" gamepad button as RPG Maker's scripts know them. */
+enum { ACT_CONFIRM, ACT_CANCEL, ACT_DASH, ACT_MENU, ACT_PAGEUP, ACT_PAGEDOWN, ACT_L2, ACT_R2, ACT_SELECT,
+       ACT_START, ACT_L3, ACT_R3, ACT_COUNT };
+static const char* const action_names[ACT_COUNT + 1] = {
+	"Confirm", "Cancel", "Dash", "Menu", "Page up", "Page down", "L2 (extra)", "R2 (extra)", "Select (extra)",
+	"Start (extra)", "L3 (extra)", "R3 (extra)", "Nothing",
+};
+
+typedef struct {
+	const char* key;   /* name in settings.ini */
+	const char* label; /* shown in the menu */
+	int def;           /* default action */
+} PadButton;
+static const PadButton pad_buttons[] = {
+	{"cross", "Cross  \xE2\x9C\x95", ACT_CONFIRM},
+	{"circle", "Circle  \xE2\x97\x8B", ACT_CANCEL},
+	{"square", "Square  \xE2\x96\xA1", ACT_DASH},
+	{"triangle", "Triangle  \xE2\x96\xB3", ACT_MENU},
+	{"l1", "L1", ACT_PAGEUP},
+	{"r1", "R1", ACT_PAGEDOWN},
+	{"l2", "L2", ACT_L2},
+	{"r2", "R2", ACT_R2},
+	{"l3", "L3  (press the left stick)", ACT_L3},
+	{"r3", "R3  (press the right stick)", ACT_R3},
+	{"options", "Options", ACT_START},
+	{"touchpad", "Touchpad press", ACT_SELECT},
+};
+#define PAD_BUTTONS ((int)(sizeof pad_buttons / sizeof pad_buttons[0]))
+
+/* Keyboard keys a pad button can press in the game (DOM key codes, as the game's scripts see them). */
+typedef struct { int code; const char* label; } KeyDef;
+static KeyDef key_table[100];
+static int key_table_size;
+
+static void key_table_init(void) {
+	static char names[80][8];
+	int n = 0, used = 0;
+	key_table[n++] = (KeyDef){0, "none"};
+	static const KeyDef special[] = {
+		{13, "Enter"}, {27, "Escape"}, {32, "Space"}, {9, "Tab"}, {16, "Shift"}, {17, "Ctrl"}, {18, "Alt"},
+		{8, "Backspace"}, {38, "Up arrow"}, {40, "Down arrow"}, {37, "Left arrow"}, {39, "Right arrow"},
+		{33, "Page up"}, {34, "Page down"}, {36, "Home"}, {35, "End"}, {45, "Insert"}, {46, "Delete"},
+	};
+	for (size_t i = 0; i < sizeof special / sizeof special[0]; i++) key_table[n++] = special[i];
+	for (int c = 'A'; c <= 'Z'; c++) {
+		snprintf(names[used], sizeof names[used], "%c", c);
+		key_table[n++] = (KeyDef){c, names[used++]};
+	}
+	for (int c = '0'; c <= '9'; c++) {
+		snprintf(names[used], sizeof names[used], "%c", c);
+		key_table[n++] = (KeyDef){c, names[used++]};
+	}
+	for (int f = 1; f <= 12; f++) {
+		snprintf(names[used], sizeof names[used], "F%d", f);
+		key_table[n++] = (KeyDef){111 + f, names[used++]};
+	}
+	key_table_size = n;
+}
+
+static int key_index(int code) {
+	for (int i = 0; i < key_table_size; i++)
+		if (key_table[i].code == code) return i;
+	return 0;
+}
+
+static const char* const scale_names[] = {"Automatic", "Sharp (blocky pixels)", "Smooth"};
+static const char* const pointer_names[] = {"Slow", "Normal", "Fast"};
+
+typedef struct {
+	int map[PAD_BUTTONS]; /* action per pad button, -1 = nothing */
+	int key[PAD_BUTTONS]; /* keyboard key (DOM key code) a pad button also presses, 0 = none */
+	int scale;            /* 0 automatic, 1 sharp, 2 smooth */
+	int pointer;          /* touchpad pointer speed: 0 slow, 1 normal, 2 fast */
+} Settings;
+static Settings settings;
+
+static void settings_defaults(Settings* st) {
+	for (int i = 0; i < PAD_BUTTONS; i++) {
+		st->map[i] = pad_buttons[i].def;
+		st->key[i] = 0;
+	}
+	st->scale = 0;
+	st->pointer = 1;
+}
+
+static void settings_load(void) {
+	settings_defaults(&settings);
+	FILE* f = fopen(SETTINGS_PATH, "r");
+	if (!f) return;
+	char line[128];
+	while (fgets(line, sizeof line, f)) {
+		char* eq = strchr(line, '=');
+		if (!eq) continue;
+		*eq = '\0';
+		int value = atoi(eq + 1);
+		if (!strcmp(line, "scale")) {
+			if (value >= 0 && value <= 2) settings.scale = value;
+		} else if (!strcmp(line, "pointer")) {
+			if (value >= 0 && value <= 2) settings.pointer = value;
+		} else if (!strncmp(line, "map.", 4)) {
+			for (int i = 0; i < PAD_BUTTONS; i++)
+				if (!strcmp(line + 4, pad_buttons[i].key) && value >= -1 && value < ACT_COUNT) settings.map[i] = value;
+		} else if (!strncmp(line, "key.", 4)) {
+			for (int i = 0; i < PAD_BUTTONS; i++)
+				if (!strcmp(line + 4, pad_buttons[i].key) && key_index(value) > 0) settings.key[i] = value;
+		}
+	}
+	fclose(f);
+}
+
+static void settings_save(void) {
+	FILE* f = fopen(SETTINGS_PATH, "w");
+	if (!f) return;
+	fprintf(f, "# written by the RPG Maker launcher (Settings)\n");
+	for (int i = 0; i < PAD_BUTTONS; i++) fprintf(f, "map.%s=%d\n", pad_buttons[i].key, settings.map[i]);
+	for (int i = 0; i < PAD_BUTTONS; i++) fprintf(f, "key.%s=%d\n", pad_buttons[i].key, settings.key[i]);
+	fprintf(f, "scale=%d\npointer=%d\n", settings.scale, settings.pointer);
+	fclose(f);
+}
+
+#define ROW_KEYS PAD_BUTTONS                    /* first row of the keyboard keys */
+#define ROW_SCALE (2 * PAD_BUTTONS)
+#define SETTINGS_ROWS (2 * PAD_BUTTONS + 3) /* buttons, keyboard keys, scaling, pointer speed, reset */
+
+/* Changes the value of a row by `dir` steps (usually +1/-1; keyboard keys also take bigger jumps). */
+static void settings_change(int row, int dir) {
+	if (row < PAD_BUTTONS) {
+		int idx = settings.map[row] < 0 ? ACT_COUNT : settings.map[row];
+		idx = ((idx + dir) % (ACT_COUNT + 1) + ACT_COUNT + 1) % (ACT_COUNT + 1);
+		settings.map[row] = idx == ACT_COUNT ? -1 : idx;
+	} else if (row < ROW_SCALE) {
+		int b = row - ROW_KEYS;
+		int idx = key_index(settings.key[b]);
+		idx = ((idx + dir) % key_table_size + key_table_size) % key_table_size;
+		settings.key[b] = key_table[idx].code;
+	} else if (row == ROW_SCALE) {
+		settings.scale = (settings.scale + (dir > 0 ? 1 : 2)) % 3;
+	} else if (row == ROW_SCALE + 1) {
+		settings.pointer = (settings.pointer + (dir > 0 ? 1 : 2)) % 3;
+	} else {
+		settings_defaults(&settings);
+	}
+	settings_save();
+}
+
+/* --- drawing --- */
+
+static SDL_Renderer* ren;
+static const char* shot_path; /* development aid: RPGMAKER_SHOT=file.ppm draws one screen, saves it and quits */
+
+static void maybe_shot(void) {
+	if (!shot_path) return;
+	int w = SCREEN_W, h = SCREEN_H;
+	unsigned char* px = malloc((size_t)w * h * 3);
+	if (px && SDL_RenderReadPixels(ren, NULL, SDL_PIXELFORMAT_RGB24, px, w * 3) == 0) {
+		FILE* f = fopen(shot_path, "wb");
+		if (f) {
+			fprintf(f, "P6\n%d %d\n255\n", w, h);
+			fwrite(px, 1, (size_t)w * h * 3, f);
+			fclose(f);
+		}
+	}
+	free(px);
+	exit(0);
+}
+static TTF_Font *font_big, *font_mid, *font_small;
+
+static int text_width(TTF_Font* f, const char* s) {
+	int w = 0, h = 0;
+	TTF_SizeUTF8(f, s, &w, &h);
+	return w;
+}
+
+static void draw_text(TTF_Font* f, const char* s, int x, int y, SDL_Color c) {
+	if (!s[0]) return;
+	SDL_Surface* surf = TTF_RenderUTF8_Blended(f, s, c);
+	if (!surf) return;
+	SDL_Texture* tex = SDL_CreateTextureFromSurface(ren, surf);
+	SDL_Rect dst = {x, y, surf->w, surf->h};
+	SDL_FreeSurface(surf);
+	if (tex) {
+		SDL_RenderCopy(ren, tex, NULL, &dst);
+		SDL_DestroyTexture(tex);
+	}
+}
+
+/* Text cut off with "..." so it fits into `max_w` pixels. */
+static void draw_text_fit(TTF_Font* f, const char* s, int x, int y, int max_w, SDL_Color c) {
+	char buf[300];
+	snprintf(buf, sizeof buf, "%s", s);
+	while (text_width(f, buf) > max_w && strlen(buf) > 4) {
+		size_t len = strlen(buf);
+		/* remove one UTF-8 character (skip continuation bytes) before the "..." */
+		size_t cut = len - 3;
+		while (cut > 0 && ((unsigned char)buf[cut - 1] & 0xC0) == 0x80) cut--;
+		if (cut > 0) cut--;
+		while (cut > 0 && ((unsigned char)buf[cut] & 0xC0) == 0x80) cut--;
+		snprintf(buf + cut, sizeof buf - cut, "...");
+	}
+	draw_text(f, buf, x, y, c);
+}
+
+static void fill(int x, int y, int w, int h, Uint8 r, Uint8 g, Uint8 b) {
+	SDL_SetRenderDrawColor(ren, r, g, b, 255);
+	SDL_Rect rc = {x, y, w, h};
+	SDL_RenderFillRect(ren, &rc);
+}
+
+#define ROW_H 62
+#define LIST_TOP 200
+#define VISIBLE_ROWS 13
+
+static void draw_screen(int selected, int scroll, const char* message) {
+	static const SDL_Color white = {235, 238, 250, 255}, dim = {150, 160, 190, 255}, gold = {255, 210, 90, 255};
+
+	fill(0, 0, SCREEN_W, SCREEN_H, 16, 20, 42);
+	fill(0, 0, SCREEN_W, 150, 26, 34, 74);
+	draw_text(font_big, "RPG Maker", 90, 30, white);
+	char sub[128];
+	snprintf(sub, sizeof sub, "%d game%s", game_count, game_count == 1 ? "" : "s");
+	draw_text(font_mid, sub, SCREEN_W - 90 - text_width(font_mid, sub), 62, dim);
+
+	if (game_count == 0) {
+		draw_text(font_mid, "No games found.", 90, LIST_TOP + 20, white);
+		draw_text(font_small, "Copy game folders to /data/games (FTP), or to a folder named \"games\" on a USB stick.", 90,
+		          LIST_TOP + 90, dim);
+		draw_text(font_small, "Supported: RPG Maker 2000, 2003, XP, VX, VX Ace, MV and MZ.", 90, LIST_TOP + 140, dim);
+		if (local_ip[0]) {
+			char line[200];
+			snprintf(line, sizeof line, "From a phone or PC: start ftpsrv, then connect an FTP app to  %s  port 2121.", local_ip);
+			draw_text(font_small, line, 90, LIST_TOP + 190, dim);
+		}
+	}
+
+	for (int row = 0; row < VISIBLE_ROWS; row++) {
+		int i = scroll + row;
+		if (i >= game_count) break;
+		int y = LIST_TOP + row * ROW_H;
+		int usable = 1;
+		if (i == selected) fill(60, y, SCREEN_W - 120, ROW_H - 6, 52, 84, 196);
+		if (games[i].missing_rtp[0]) draw_text(font_mid, "!", 68, y + 6, (SDL_Color){255, 120, 90, 255});
+		SDL_Color c = usable ? white : dim;
+		draw_text_fit(font_mid, games[i].name, 90, y + 6, 1000, c);
+		draw_text(font_small, engine_label(games[i].engine), 1130, y + 12, usable ? gold : dim);
+		draw_text(font_small, games[i].where, SCREEN_W - 90 - text_width(font_small, games[i].where), y + 12, dim);
+	}
+	if (game_count > VISIBLE_ROWS) {
+		char pos[64];
+		snprintf(pos, sizeof pos, "%d / %d", selected + 1, game_count);
+		draw_text(font_small, pos, SCREEN_W - 90 - text_width(font_small, pos), LIST_TOP + VISIBLE_ROWS * ROW_H + 10, dim);
+	}
+
+	fill(0, SCREEN_H - 110, SCREEN_W, 110, 26, 34, 74);
+	draw_text(font_small, "\xE2\x9C\x95  Play        \xE2\x96\xB3  Rescan        L1 / R1  Page        Options  Settings", 90, SCREEN_H - 92, dim);
+	if (local_ip[0]) {
+		char addr[100];
+		snprintf(addr, sizeof addr, "Console: %s", local_ip);
+		draw_text(font_small, addr, SCREEN_W - 90 - text_width(font_small, addr), SCREEN_H - 92, dim);
+	}
+	if (message[0]) draw_text_fit(font_small, message, 90, SCREEN_H - 50, SCREEN_W - 180, gold);
+	maybe_shot();
+	SDL_RenderPresent(ren);
+}
+
+#define SETTINGS_TOP 165
+#define SETTINGS_ROW_H 54
+#define SETTINGS_VISIBLE 14
+
+static void draw_settings(int row, int scroll, const char* message) {
+	static const SDL_Color white = {235, 238, 250, 255}, dim = {150, 160, 190, 255}, gold = {255, 210, 90, 255};
+
+	fill(0, 0, SCREEN_W, SCREEN_H, 16, 20, 42);
+	fill(0, 0, SCREEN_W, 140, 26, 34, 74);
+	draw_text(font_big, "Settings", 90, 16, white);
+	draw_text(font_small, "For RPG Maker MV and MZ games. Other engines use their own keys.", 90, 100, dim);
+
+	for (int r = 0; r < SETTINGS_VISIBLE; r++) {
+		int i = scroll + r;
+		if (i >= SETTINGS_ROWS) break;
+		int y = SETTINGS_TOP + r * SETTINGS_ROW_H;
+		if (i == row) fill(60, y, SCREEN_W - 120, SETTINGS_ROW_H - 4, 52, 84, 196);
+		char label[96];
+		if (i < PAD_BUTTONS) {
+			snprintf(label, sizeof label, "%s   (game button)", pad_buttons[i].label);
+			draw_text(font_mid, label, 100, y + 4, white);
+			int act = settings.map[i];
+			draw_text(font_mid, action_names[act < 0 ? ACT_COUNT : act], 1150, y + 4, act != pad_buttons[i].def ? gold : white);
+		} else if (i < ROW_SCALE) {
+			int b = i - ROW_KEYS;
+			snprintf(label, sizeof label, "%s   (keyboard key)", pad_buttons[b].label);
+			draw_text(font_mid, label, 100, y + 4, white);
+			draw_text(font_mid, key_table[key_index(settings.key[b])].label, 1150, y + 4, settings.key[b] ? gold : dim);
+		} else if (i == ROW_SCALE) {
+			draw_text(font_mid, "Picture scaling", 100, y + 4, white);
+			draw_text(font_mid, scale_names[settings.scale], 1150, y + 4, settings.scale ? gold : white);
+		} else if (i == ROW_SCALE + 1) {
+			draw_text(font_mid, "Touchpad pointer speed", 100, y + 4, white);
+			draw_text(font_mid, pointer_names[settings.pointer], 1150, y + 4, settings.pointer != 1 ? gold : white);
+		} else {
+			draw_text(font_mid, "Reset everything to the defaults", 100, y + 4, dim);
+		}
+	}
+	if (scroll > 0) draw_text(font_small, "\xE2\x96\xB2 more", SCREEN_W - 260, SETTINGS_TOP - 34, dim);
+	if (scroll + SETTINGS_VISIBLE < SETTINGS_ROWS)
+		draw_text(font_small, "\xE2\x96\xBC more", SCREEN_W - 260, SETTINGS_TOP + SETTINGS_VISIBLE * SETTINGS_ROW_H - 4, dim);
+
+	fill(0, SCREEN_H - 110, SCREEN_W, 110, 26, 34, 74);
+	draw_text(font_small, "D-pad Up/Down: choose     Left/Right or \xE2\x9C\x95: change     L1/R1: change by 10     \xE2\x96\xB3  Defaults     \xE2\x97\x8B  Back",
+	          90, SCREEN_H - 92, dim);
+	if (message[0]) draw_text_fit(font_small, message, 90, SCREEN_H - 50, SCREEN_W - 180, gold);
+	maybe_shot();
+	SDL_RenderPresent(ren);
+}
+
+/* --- main loop --- */
+
+static TTF_Font* open_font(int size) {
+	const char* env_font = getenv("RPGMAKER_FONT");
+	TTF_Font* f = TTF_OpenFont(env_font ? env_font : FONT_PATH, size);
+	if (!f) f = TTF_OpenFont("/data/homebrew/mkxp-z/font.ttf", size);
+	return f;
+}
+
+int main(void) {
+	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) != 0) return 1;
+	if (TTF_Init() != 0) return 1;
+	SDL_Window* win = SDL_CreateWindow("RPG Maker", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, SCREEN_W, SCREEN_H,
+	                                   SDL_WINDOW_FULLSCREEN);
+	if (!win) return 1;
+	ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
+	if (!ren) return 1;
+
+	font_big = open_font(72);
+	font_mid = open_font(40);
+	font_small = open_font(30);
+	if (!font_big || !font_mid || !font_small) {
+		fprintf(stderr, "rpgmaker launcher: cannot open the font %s\n", FONT_PATH);
+		return 1;
+	}
+
+	SDL_Joystick* joy = SDL_NumJoysticks() > 0 ? SDL_JoystickOpen(0) : NULL;
+	key_table_init();
+	settings_load();
+	find_local_ip();
+	scan_games();
+	int screen = 0, srow = 0, sscroll = 0; /* 0: game list, 1: settings */
+	shot_path = getenv("RPGMAKER_SHOT");
+	if (shot_path && getenv("RPGMAKER_SHOT_SETTINGS")) screen = 1;
+	if (shot_path && getenv("RPGMAKER_SHOT_ROW")) {
+		srow = atoi(getenv("RPGMAKER_SHOT_ROW"));
+		if (srow >= SETTINGS_ROWS) srow = SETTINGS_ROWS - 1;
+		if (srow >= SETTINGS_VISIBLE) sscroll = srow - SETTINGS_VISIBLE + 1;
+	}
+
+	int selected = 0, scroll = 0, dirty = 1, hold = 0, warned = -1;
+	Uint32 next_repeat = 0;
+	char message[400] = "";
+	if (game_count > 0 && games[0].missing_rtp[0]) {
+		snprintf(message, sizeof message,
+		         "! This game needs the RTP \"%s\". Put a folder with that name into a folder called \"rtp\" on your USB stick (or /data/rtp).",
+		         games[0].missing_rtp);
+	}
+	int running = 1;
+
+	while (running) {
+		int move = 0;
+		SDL_Event e;
+		while (SDL_PollEvent(&e)) {
+			if (e.type == SDL_QUIT) running = 0;
+			if (e.type == SDL_JOYBUTTONDOWN && screen == 1) {
+				switch (e.jbutton.button) {
+				case 0: /* Cross */
+					settings_change(srow, 1);
+					dirty = 1;
+					break;
+				case 14: /* D-pad right */
+					settings_change(srow, 1);
+					dirty = 1;
+					break;
+				case 13: /* D-pad left */
+					settings_change(srow, -1);
+					dirty = 1;
+					break;
+				case 3: /* Triangle: defaults */
+					settings_change(SETTINGS_ROWS - 1, 1);
+					dirty = 1;
+					break;
+				case 9: /* L1 */
+					settings_change(srow, -10);
+					dirty = 1;
+					break;
+				case 10: /* R1 */
+					settings_change(srow, 10);
+					dirty = 1;
+					break;
+				case 1: /* Circle: back */
+					screen = 0;
+					dirty = 1;
+					break;
+				}
+				continue;
+			}
+			if (e.type == SDL_JOYBUTTONDOWN) {
+				switch (e.jbutton.button) {
+				case 6: /* Options */
+					screen = 1;
+					dirty = 1;
+					break;
+				case 0: /* Cross */
+					if (game_count > 0) {
+						int r = start_game(&games[selected], warned == selected, message, sizeof message);
+						warned = (r == 1) ? selected : -1;
+						dirty = 1;
+					}
+					break;
+				case 3: /* Triangle */
+					find_local_ip();
+					scan_games();
+					if (selected >= game_count) selected = game_count ? game_count - 1 : 0;
+					snprintf(message, sizeof message, "Found %d game%s.", game_count, game_count == 1 ? "" : "s");
+					dirty = 1;
+					break;
+				case 9: move = -(VISIBLE_ROWS - 1); break;  /* L1 */
+				case 10: move = VISIBLE_ROWS - 1; break;    /* R1 */
+				}
+			}
+		}
+
+		/* held direction (D-pad hat/buttons or left stick) with key repeat */
+		int dir = 0;
+		if (joy) {
+			Uint8 hat = SDL_JoystickNumHats(joy) > 0 ? SDL_JoystickGetHat(joy, 0) : 0;
+			if ((hat & SDL_HAT_UP) || SDL_JoystickGetButton(joy, 11) || SDL_JoystickGetAxis(joy, 1) < -16000) dir = -1;
+			if ((hat & SDL_HAT_DOWN) || SDL_JoystickGetButton(joy, 12) || SDL_JoystickGetAxis(joy, 1) > 16000) dir = 1;
+		}
+		Uint32 now = SDL_GetTicks();
+		if (dir != hold) {
+			hold = dir;
+			if (dir) {
+				move = dir;
+				next_repeat = now + 350;
+			}
+		} else if (dir && now >= next_repeat) {
+			move = dir;
+			next_repeat = now + 80;
+		}
+
+		if (move && screen == 1) {
+			srow += move > 0 ? 1 : -1;
+			if (srow < 0) srow = 0;
+			if (srow >= SETTINGS_ROWS) srow = SETTINGS_ROWS - 1;
+			if (srow < sscroll) sscroll = srow;
+			if (srow >= sscroll + SETTINGS_VISIBLE) sscroll = srow - SETTINGS_VISIBLE + 1;
+			dirty = 1;
+			move = 0;
+		}
+
+		if (move && game_count > 0 && screen == 0) {
+			selected += move;
+			if (selected < 0) selected = 0;
+			if (selected >= game_count) selected = game_count - 1;
+			if (selected < scroll) scroll = selected;
+			if (selected >= scroll + VISIBLE_ROWS) scroll = selected - VISIBLE_ROWS + 1;
+			warned = -1;
+			message[0] = '\0';
+			if (games[selected].missing_rtp[0]) {
+				snprintf(message, sizeof message,
+				         "! This game needs the RTP \"%s\". Put a folder with that name into a folder called \"rtp\" on your USB stick (or /data/rtp).",
+				         games[selected].missing_rtp);
+			}
+			dirty = 1;
+		}
+
+		if (dirty) {
+			if (screen == 1) draw_settings(srow, sscroll, "Changes are saved as you make them and apply the next time you start a game.");
+			else draw_screen(selected, scroll, message);
+			dirty = 0;
+		}
+		SDL_Delay(16);
+	}
+
+	TTF_Quit();
+	SDL_Quit();
+	return 0;
+}

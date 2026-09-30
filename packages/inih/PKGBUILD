@@ -1,0 +1,35 @@
+pkgname=ps5-payload-inih
+pkgver=62
+pkgrel=1
+pkgdesc='Simple INI file parser in C (required by liblcf / EasyRPG Player)'
+arch=('any')
+url='https://github.com/benhoyt/inih'
+license=('BSD-3-Clause')
+options=(!strip libtool staticlibs)
+source=("inih-r$pkgver.tar.gz::https://github.com/benhoyt/inih/archive/refs/tags/r$pkgver.tar.gz")
+sha256sums=('9c15fa751bb8093d042dae1b9f125eb45198c32c6704cd5481ccde460d4f8151')
+groups=('ps5-payload-dev')
+makedepends=('ps5-payload-sdk')
+
+prepare() {
+    if [ -z "${PS5_PAYLOAD_SDK}" ]; then
+	export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
+    fi
+}
+
+build() {
+    source "${PS5_PAYLOAD_SDK}/toolchain/prospero.sh"
+    cd inih-r$pkgver
+
+    ${MESON} setup builddir \
+	     --default-library=static \
+	     -Dwith_INIReader=false -Dtests=false
+    ${MESON} compile -vC builddir
+}
+
+package() {
+    source "${PS5_PAYLOAD_SDK}/toolchain/prospero.sh"
+    cd inih-r$pkgver
+
+    ${MESON} install -C builddir --destdir "${pkgdir}/${PS5_PAYLOAD_SDK}/target"
+}

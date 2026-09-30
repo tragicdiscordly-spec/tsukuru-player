@@ -1,0 +1,20 @@
+From: PS5 SDL port local patch
+Subject: [PATCH] ps5: request 32 MB of direct memory instead of 64 MB
+
+Payloads started through elfldr can allocate at most somewhere between 32 and 64 MB of direct
+memory. Two 1080p buffers need well under 32 MB, so ask for that instead of failing with EAGAIN.
+
+---
+diff --git a/src/video/ps5/SDL_ps5video.c b/src/video/ps5/SDL_ps5video.c
+index a62be0e8e..39515dbaf 100644
+--- a/src/video/ps5/SDL_ps5video.c
++++ b/src/video/ps5/SDL_ps5video.c
+@@ -207,7 +207,7 @@ static int PS5_VideoInit(_THIS)
+     if (device_data->handle < 0) {
+         return SDL_SetError("sceVideoOutOpen: %s", strerror(errno));
+     }
+-    device_data->memsize = 0x4000000;
++    device_data->memsize = 0x2000000;
+     if (sceKernelAllocateMainDirectMemory(device_data->memsize, 0x20000, 3,
+                                           &device_data->paddr)) {
+         return SDL_SetError("sceKernelAllocateMainDirectMemory: %s",

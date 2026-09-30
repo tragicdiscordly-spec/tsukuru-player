@@ -1,0 +1,56 @@
+pkgname=ps5-payload-liblcf
+pkgver=git
+pkgrel=1
+pkgdesc='Library to read and write RPG Maker 2000/2003 game data (used by EasyRPG Player)'
+arch=('any')
+url='https://github.com/EasyRPG/liblcf'
+license=('MIT')
+options=(!strip libtool staticlibs)
+source=('git+https://github.com/EasyRPG/liblcf.git')
+sha256sums=('SKIP')
+groups=('ps5-payload-dev')
+depends=('ps5-payload-expat' 'ps5-payload-inih' 'ps5-payload-icu')
+makedepends=('ps5-payload-sdk')
+
+# The expat package installs a CMake config that references a shared libexpat.so which is never built
+# (static only), so skip that config and let liblcf fall back to CMake's FindEXPAT module.
+# ICU converts the game's text encodings (Shift-JIS and friends) so Japanese and other non-Latin
+# games work. U_STATIC_IMPLEMENTATION has to match how ICU itself was built (see the icu recipe).
+
+prepare() {
+    if [ -z "${PS5_PAYLOAD_SDK}" ]; then
+	export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
+    fi
+}
+
+pkgver() {
+    cd liblcf
+    printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+build() {
+    source "${PS5_PAYLOAD_SDK}/toolchain/prospero.sh"
+    cd liblcf
+
+    ${CMAKE} -DCMAKE_BUILD_TYPE=Release \
+	     -DBUILD_SHARED_LIBS=OFF \
+	     -DLIBLCF_WITH_ICU=ON \
+	     -DCMAKE_CXX_FLAGS=-DU_STATIC_IMPLEMENTATION \
+	     -DLIBLCF_ENABLE_TOOLS=OFF \
+	     -DLIBLCF_ENABLE_TESTS=OFF \
+	     -DLIBLCF_UPDATE_MIMEDB=OFF \
+	     -DCMAKE_DISABLE_FIND_PACKAGE_expat=ON \
+	     -B build \
+	     -S .
+    ${MAKE} -C build
+}
+
+package() {
+    source "${PS5_PAYLOAD_SDK}/toolchain/prospero.sh"
+    cd liblcf
+
+    export DESTDIR="${pkgdir}/${DESTDIR}"
+    ${MAKE} -C build install
+
+    ${PS5_CROSS_FIX_ROOT} "${DESTDIR}/${PREFIX}"
+}

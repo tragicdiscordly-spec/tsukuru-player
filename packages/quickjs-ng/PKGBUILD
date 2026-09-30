@@ -1,0 +1,46 @@
+pkgname=ps5-payload-quickjs-ng
+pkgver=0.17.0.r2f0aa72
+pkgrel=1
+pkgdesc='QuickJS-NG, a small embeddable JavaScript engine (used by the RPG Maker MV/MZ runtime)'
+arch=('any')
+url='https://github.com/quickjs-ng/quickjs'
+license=('MIT')
+options=(!strip libtool staticlibs)
+_commit=2f0aa72a6b09cf69ff06399bcf9f4c083ac1a278
+source=("quickjs-ng-$_commit.tar.gz::https://github.com/quickjs-ng/quickjs/archive/$_commit.tar.gz")
+sha256sums=('13077225feb52766c168967286eb541e9cf35ff94b5205f13a829ee4aecdce4b')
+groups=('ps5-payload-dev')
+makedepends=('ps5-payload-sdk')
+
+prepare() {
+    if [ -z "${PS5_PAYLOAD_SDK}" ]; then
+	export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
+    fi
+}
+
+build() {
+    source "${PS5_PAYLOAD_SDK}/toolchain/prospero.sh"
+    cd quickjs-$_commit
+
+    # The SDK's math.h trips -Wunreachable-code-generic-assoc, and -Werror turns that into an error.
+    sed -i '/xcheck_add_c_compiler_flag(-Werror)/d' CMakeLists.txt
+
+    ${CMAKE} -DCMAKE_BUILD_TYPE=Release \
+	     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+	     -DBUILD_SHARED_LIBS=OFF \
+	     -DQJS_BUILD_LIBC=ON \
+	     -DQJS_BUILD_EXAMPLES=OFF \
+	     -B build \
+	     -S .
+    ${MAKE} -C build qjs
+}
+
+package() {
+    source "${PS5_PAYLOAD_SDK}/toolchain/prospero.sh"
+    cd quickjs-$_commit
+
+    export DESTDIR="${pkgdir}/${DESTDIR}"
+    ${MAKE} -C build install
+
+    ${PS5_CROSS_FIX_ROOT} "${DESTDIR}/${PREFIX}"
+}

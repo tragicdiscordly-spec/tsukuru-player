@@ -1,0 +1,145 @@
+diff --git a/src/platform/sdl/main.cpp b/src/platform/sdl/main.cpp
+index cb289d3..0756f7e 100644
+--- a/src/platform/sdl/main.cpp
++++ b/src/platform/sdl/main.cpp
+@@ -37,6 +37,128 @@
+ #  include "platform/android/android.h"
+ #endif
+ 
++#ifdef __SCE__
++#  include <signal.h>
++#  include <stdint.h>
++#  include <dirent.h>
++#  include <stdio.h>
++#  include <stdlib.h>
++#  include <string.h>
++#  include <unistd.h>
++#  include <sys/ucontext.h>
++#  include <pthread.h>
++
++extern "C" char __executable_start;
++
++// Crash reporter for PS5 homebrew: there is no debugger and a crash only shows up as the app
++// disappearing, so print where it happened. Addresses are relative to the load address of the
++// executable (pass them to llvm-symbolizer together with the unstripped binary).
++static void CrashHandler(int sig, siginfo_t* info, void* ctx) {
++	char buf[256];
++	auto* uc = static_cast<ucontext_t*>(ctx);
++	auto base = reinterpret_cast<uintptr_t>(&__executable_start);
++	// The PS5 linker script does not provide etext; the whole image is well below 32 MB.
++	auto text_end = base + 0x2000000;
++	auto rip = static_cast<uintptr_t>(uc->uc_mcontext.mc_rip);
++	auto rsp = static_cast<uintptr_t>(uc->uc_mcontext.mc_rsp);
++
++	int n = snprintf(buf, sizeof(buf), "\n*** CRASH signal=%d code=%d fault_addr=%p base=%p rip=0x%lx\n", sig,
++		info->si_code, info->si_addr, reinterpret_cast<void*>(base),
++		static_cast<unsigned long>(rip >= base ? rip - base : rip));
++	write(2, buf, n);
++
++	n = snprintf(buf, sizeof(buf), "  rax=%lx rbx=%lx rcx=%lx rdx=%lx rsi=%lx rdi=%lx rbp=%lx rsp=%lx\n",
++		(unsigned long)uc->uc_mcontext.mc_rax, (unsigned long)uc->uc_mcontext.mc_rbx,
++		(unsigned long)uc->uc_mcontext.mc_rcx, (unsigned long)uc->uc_mcontext.mc_rdx,
++		(unsigned long)uc->uc_mcontext.mc_rsi, (unsigned long)uc->uc_mcontext.mc_rdi,
++		(unsigned long)uc->uc_mcontext.mc_rbp, (unsigned long)rsp);
++	write(2, buf, n);
++
++	n = snprintf(buf, sizeof(buf), "  thread=%p\n", (void*)pthread_self());
++	write(2, buf, n);
++
++	// Raw words at the top of the stack; the first one is usually the return address.
++	auto* top = reinterpret_cast<uintptr_t*>(rsp);
++	for (int i = 0; i < 24; ++i) {
++		n = snprintf(buf, sizeof(buf), "  sp[%d] = %lx\n", i, (unsigned long)top[i]);
++		write(2, buf, n);
++	}
++
++	// Poor man's backtrace: list stack words that look like return addresses into our own code.
++	auto* stack = reinterpret_cast<uintptr_t*>(rsp);
++	int found = 0;
++	for (int i = 0; i < 1024 && found < 40; ++i) {
++		uintptr_t v = stack[i];
++		if (v >= base && v < text_end) {
++			n = snprintf(buf, sizeof(buf), "  stack[%d] = 0x%lx\n", i, static_cast<unsigned long>(v - base));
++			write(2, buf, n);
++			++found;
++		}
++	}
++	_exit(128 + sig);
++}
++
++static bool HasSubdirectories(const char* path) {
++	DIR* dir = opendir(path);
++	if (!dir) {
++		return false;
++	}
++	bool found = false;
++	while (struct dirent* e = readdir(dir)) {
++		if (e->d_name[0] != '.' && e->d_type == DT_DIR) {
++			found = true;
++			break;
++		}
++	}
++	closedir(dir);
++	return found;
++}
++
++// Homebrew apps start with an empty environment. Without HOME the Player cannot work out its config
++// directory (it logs "Could not determine config path") and later crashes on a null string.
++static void SetupEnvironment() {
++	if (!getenv("HOME")) {
++		setenv("HOME", "/data/homebrew/easyrpg", 1);
++	}
++
++	// The Player looks for a game in the project path and shows its game browser when there is none.
++	// Its default (the working directory, as an empty relative path) makes the PS5 libc run out of
++	// memory, so point it at the folder where games are kept with an absolute path instead: a
++	// "games" folder on a USB stick if one is plugged in and has games in it, otherwise /data/games.
++	// RPG_GAME_PATH in the environment and --project-path on the command line take precedence.
++	static const char* const roots[] = {
++		"/mnt/usb0/games", "/mnt/usb1/games", "/mnt/usb2/games", "/mnt/usb3/games",
++		"/mnt/usb4/games", "/mnt/usb5/games", "/mnt/usb6/games", "/mnt/usb7/games",
++	};
++	for (const char* root : roots) {
++		if (HasSubdirectories(root)) {
++			setenv("RPG_GAME_PATH", root, 0);
++			return;
++		}
++	}
++	setenv("RPG_GAME_PATH", "/data/games", 0);
++}
++
++static void InstallCrashHandler() {
++	// Run on a separate stack so that stack overflows can be reported too.
++	static char alt_stack[64 * 1024];
++	stack_t ss;
++	ss.ss_sp = alt_stack;
++	ss.ss_size = sizeof(alt_stack);
++	ss.ss_flags = 0;
++	sigaltstack(&ss, nullptr);
++
++	struct sigaction sa;
++	memset(&sa, 0, sizeof(sa));
++	sa.sa_sigaction = CrashHandler;
++	sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
++	sigemptyset(&sa.sa_mask);
++	for (int sig : {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT}) {
++		sigaction(sig, &sa, nullptr);
++	}
++}
++#endif
++
+ #ifdef __ANDROID__
+ static void LogCallback(LogLevel lvl, std::string const& msg, LogCallbackUserData /* userdata */) {
+ #  ifdef NDEBUG
+@@ -60,6 +182,11 @@ static void LogCallback(LogLevel lvl, std::string const& msg, LogCallbackUserDat
+ int main(int argc, char* argv[]) {
+ 	std::vector<std::string> args;
+ 
++#ifdef __SCE__
++	SetupEnvironment();
++	InstallCrashHandler();
++#endif
++
+ #if defined(_WIN32)
+ 	// Use widestring args
+ 	int argc_w;

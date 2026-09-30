@@ -1,0 +1,9 @@
+prefix=/user/homebrew
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: fluidsynth
+Description: FluidSynth API subset for mkxp-z, implemented with TinySoundFont
+Version: 2.3.0
+Libs: -L${libdir} -lfluidsynth -lm
+Cflags: -I${includedir}

@@ -1,0 +1,41 @@
+pkgname=ps5-payload-uchardet
+pkgver=0.0.8
+pkgrel=1
+pkgdesc='Universal charset detection library (used by mkxp-z)'
+arch=('any')
+url='https://www.freedesktop.org/wiki/Software/uchardet/'
+license=('MPL-1.1')
+options=(!strip libtool staticlibs)
+source=("uchardet-$pkgver.tar.gz::https://gitlab.freedesktop.org/uchardet/uchardet/-/archive/v$pkgver/uchardet-v$pkgver.tar.gz")
+sha256sums=('5aa402a1b5b1dbb8d81096f141ff1224e079f4d3a1db0f79ecca782756d3a416')
+groups=('ps5-payload-dev')
+makedepends=('ps5-payload-sdk')
+
+prepare() {
+    if [ -z "${PS5_PAYLOAD_SDK}" ]; then
+	export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
+    fi
+}
+
+build() {
+    source "${PS5_PAYLOAD_SDK}/toolchain/prospero.sh"
+    cd uchardet-v$pkgver
+
+    ${CMAKE} -DCMAKE_BUILD_TYPE=Release \
+	     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+	     -DBUILD_SHARED_LIBS=OFF \
+	     -DBUILD_BINARY=OFF \
+	     -B build \
+	     -S .
+    ${MAKE} -C build
+}
+
+package() {
+    source "${PS5_PAYLOAD_SDK}/toolchain/prospero.sh"
+    cd uchardet-v$pkgver
+
+    export DESTDIR="${pkgdir}/${DESTDIR}"
+    ${MAKE} -C build install
+
+    ${PS5_CROSS_FIX_ROOT} "${DESTDIR}/${PREFIX}"
+}

@@ -1,0 +1,69 @@
+diff --git a/src/video/ps5/SDL_ps5video.c b/src/video/ps5/SDL_ps5video.c
+index 39515dbaf..722578830 100644
+--- a/src/video/ps5/SDL_ps5video.c
++++ b/src/video/ps5/SDL_ps5video.c
+@@ -64,11 +64,19 @@ static int PS5_CreateWindowFramebuffer(_THIS, SDL_Window *window,
+     return 0;
+ }
+ 
++/* The flip of the previous frame has been submitted but its event has not been consumed yet. Waiting for it at the
++   end of the update (as done before) makes the caller sleep until the next vertical blank, i.e. up to a whole frame
++   in which the application could be working on the next one. Instead the wait is done at the start of the next
++   update, which is when the buffer of the frame before is needed again. SDL_PS5_SYNC_FLIP=1 brings back the old
++   behaviour. */
++static SDL_bool flip_pending = SDL_FALSE;
++
+ static int PS5_UpdateWindowFramebuffer(_THIS, SDL_Window *window,
+                                        const SDL_Rect *rects, int numrects)
+ {
+     PS5_DeviceData *device_data = (PS5_DeviceData *)_this->driverdata;
+     static uint32_t frame_id = 0;
++    static int sync_flip = -1;
+     uint8_t idx = frame_id % 2;
+     SDL_Surface *surface;
+     struct kevent evt;
+@@ -79,6 +87,18 @@ static int PS5_UpdateWindowFramebuffer(_THIS, SDL_Window *window,
+         return SDL_SetError("Couldn't find surface for window");
+     }
+ 
++    if (sync_flip < 0) {
++        const char *env = SDL_getenv("SDL_PS5_SYNC_FLIP");
++        sync_flip = (env && *env && *env != '0') ? 1 : 0;
++    }
++
++    if (flip_pending) {
++        flip_pending = SDL_FALSE;
++        if (sceKernelWaitEqueue(device_data->evt_queue, &evt, 1, &junk, 0)) {
++            return SDL_SetError("sceKernelWaitEqueue: %s", strerror(errno));
++        }
++    }
++
+     if(surface->w == device_data->surface->w &&
+        surface->h == device_data->surface->h) {
+         PS5_Tilemap_Blit(device_data->tmap, surface->pixels, surface->pitch / 4,
+@@ -102,10 +122,14 @@ static int PS5_UpdateWindowFramebuffer(_THIS, SDL_Window *window,
+         return SDL_SetError("sceVideoOutSubmitFlip: %s", strerror(errno));
+     }
+ 
+-    if (sceKernelWaitEqueue(device_data->evt_queue, &evt, 1, &junk, 0)) {
+-        return SDL_SetError("sceKernelWaitEqueue: %s", strerror(errno));
+-    }
+     frame_id++;
++    if (sync_flip) {
++        if (sceKernelWaitEqueue(device_data->evt_queue, &evt, 1, &junk, 0)) {
++            return SDL_SetError("sceKernelWaitEqueue: %s", strerror(errno));
++        }
++    } else {
++        flip_pending = SDL_TRUE;
++    }
+ 
+     return 0;
+ }
+@@ -137,6 +161,7 @@ static int PS5_SetDisplayMode(_THIS, SDL_VideoDisplay * display,
+                             mode->w, mode->h);
+     }
+ 
++    flip_pending = SDL_FALSE;
+     if(device_data->evt_queue) {
+         sceVideoOutDeleteFlipEvent(device_data->evt_queue, device_data->handle);
+         sceKernelDeleteEqueue(device_data->evt_queue);

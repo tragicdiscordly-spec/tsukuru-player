@@ -1,0 +1,61 @@
+pkgname=ps5-payload-icu
+pkgver=78.3
+pkgrel=1
+pkgdesc='International Components for Unicode (text encoding conversion for liblcf / EasyRPG Player)'
+arch=('any')
+url='https://icu.unicode.org'
+license=('custom:icu')
+options=(!strip libtool staticlibs)
+source=("https://github.com/unicode-org/icu/releases/download/release-$pkgver/icu4c-$pkgver-sources.tgz")
+sha256sums=('3a2e7a47604ba702f345878308e6fefeca612ee895cf4a5f222e7955fabfe0c0')
+groups=('ps5-payload-dev')
+makedepends=('ps5-payload-sdk')
+
+prepare() {
+    if [ -z "${PS5_PAYLOAD_SDK}" ]; then
+	export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
+    fi
+}
+
+build() {
+    # ICU needs a native build first: it produces the tools (genrb, pkgdata, ...) that the
+    # cross build runs on the host. This must happen before the PS5 toolchain is sourced, since
+    # that exports CC/CXX/... for the PS5.
+    mkdir -p icu/build-native
+    (
+	cd icu/build-native
+	../source/configure --disable-tests --disable-samples --disable-extras --disable-icuio \
+			    --disable-layoutex --enable-static --disable-shared
+	make -j"$(nproc)"
+    )
+
+    source "${PS5_PAYLOAD_SDK}/toolchain/prospero.sh"
+    mkdir -p icu/build-ps5
+    cd icu/build-ps5
+
+    # The PS5 clang target accepts __declspec(dllexport), so ICU would mark its classes as
+    # dllexport twice over. U_STATIC_IMPLEMENTATION turns the export macros off (static library);
+    # anything that includes the ICU headers has to define it as well.
+    CPPFLAGS="-DU_STATIC_IMPLEMENTATION" CXXFLAGS="-O2 -std=c++17" CFLAGS="-O2" \
+    ../source/configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+			--with-cross-build="${srcdir}/icu/build-native" \
+			--enable-static --disable-shared \
+			--disable-tests --disable-samples --disable-extras --disable-tools \
+			--disable-icuio --disable-layoutex --disable-dyload
+    ${MAKE}
+}
+
+package() {
+    source "${PS5_PAYLOAD_SDK}/toolchain/prospero.sh"
+    cd icu/build-ps5
+
+    export DESTDIR="${pkgdir}/${DESTDIR}"
+    ${MAKE} install
+
+    ${PS5_CROSS_FIX_ROOT} "${DESTDIR}/${PREFIX}"
+
+    # Make pkg-config users define U_STATIC_IMPLEMENTATION too.
+    for pc in "${DESTDIR}/${PREFIX}"/lib/pkgconfig/icu-*.pc; do
+	sed -i 's|^Cflags:.*|& -DU_STATIC_IMPLEMENTATION|' "$pc"
+    done
+}

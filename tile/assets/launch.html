@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <!-- dont request favicon -->
+    <link rel="icon" href="data:,">
+    <title>RPG Maker</title>
+  </head>
+  <body style="background:#101830;color:#fff;font:36px sans-serif;padding:48px">
+    <p id="msg">Starting the RPG Maker launcher ...</p>
+    <p id="hint" style="font-size:26px;color:#9aa6d0"></p>
+    <script>
+      // Opened by the home screen tile. websrv must be running on the console (port 8080); it starts
+      // the launcher as a foreground app, which takes over the screen. This page then tries to close
+      // itself; if the web view does not allow that, Circle closes it.
+      const elf = '/data/homebrew/rpgmaker/eboot.elf';
+      const msg = document.getElementById('msg');
+      const hint = document.getElementById('hint');
+      function closeSoon() {
+        hint.textContent = 'You can close this page with Circle.';
+        setTimeout(() => { try { window.close(); } catch (e) {} }, 1500);
+        setTimeout(() => { try { history.back(); } catch (e) {} }, 2500);
+      }
+      fetch('/hbldr?path=' + encodeURIComponent(elf))
+        .then(r => {
+          msg.textContent = r.ok ? 'The launcher is starting.' : 'Could not start the launcher (HTTP ' + r.status + ').';
+          if (r.ok) closeSoon();
+        })
+        .catch(e => {
+          msg.textContent = 'Could not reach the web launcher: ' + e +
+            '. It has to be running (start-ps5.bat on your PC, or auto-start it from etaHEN).';
+        });
+    </script>
+  </body>
+</html>

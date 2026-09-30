@@ -1,0 +1,15 @@
+# Build output and downloaded toolchains
+build/
+llvm/
+sdk-bin/
+logs/
+*.elf
+*.unstripped
+*.zip
+*.tar.*
+*.tgz
+*.pkg.tar.*
+
+# Python
+__pycache__/
+*.pyc

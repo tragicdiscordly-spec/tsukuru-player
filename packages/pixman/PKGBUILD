@@ -1,0 +1,35 @@
+pkgname=ps5-payload-pixman
+pkgver=0.43.4
+pkgrel=1
+pkgdesc='Low-level pixel manipulation library (used by EasyRPG Player for software rendering)'
+arch=('any')
+url='https://www.pixman.org'
+license=('MIT')
+options=(!strip libtool staticlibs)
+source=("https://www.cairographics.org/releases/pixman-$pkgver.tar.gz")
+sha256sums=('a0624db90180c7ddb79fc7a9151093dc37c646d8c38d3f232f767cf64b85a226')
+groups=('ps5-payload-dev')
+makedepends=('ps5-payload-sdk')
+
+prepare() {
+    if [ -z "${PS5_PAYLOAD_SDK}" ]; then
+	export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
+    fi
+}
+
+build() {
+    source "${PS5_PAYLOAD_SDK}/toolchain/prospero.sh"
+    cd pixman-$pkgver
+
+    ${MESON} setup builddir \
+	     --default-library=static \
+	     -Dtests=disabled -Ddemos=disabled -Dgtk=disabled -Dlibpng=disabled
+    ${MESON} compile -vC builddir
+}
+
+package() {
+    source "${PS5_PAYLOAD_SDK}/toolchain/prospero.sh"
+    cd pixman-$pkgver
+
+    ${MESON} install -C builddir --destdir "${pkgdir}/${PS5_PAYLOAD_SDK}/target"
+}
