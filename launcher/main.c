@@ -68,7 +68,12 @@ typedef struct {
 	Engine engine;
 	char missing_rtp[128]; /* RTP names the game asks for that are not installed (XP/VX/Ace only) */
 	char exec_name[128];   /* XP/VX/Ace: "Uranium" when the game's program is Uranium.exe (reads Uranium.ini); "" for Game.exe */
+	int protected_files;   /* MV/MZ: the game's files have scrambled names (its own file protection); it cannot be run */
 } Game;
+
+#define PROTECTED_TEXT "This game protects its files in its own way (their names are scrambled), so it cannot run here."
+#define PROTECTED_MESSAGE "! " PROTECTED_TEXT
+
 
 static void collect_rtps(const char* dir, char* joined, size_t joined_size, char* missing, size_t missing_size);
 static void easyrpg_rtp_check(const char* dir, char* missing, size_t missing_size);
@@ -231,6 +236,30 @@ static void mv_root(const char* dir, char* out, size_t size) {
 	}
 }
 
+/* MV/MZ games normally have readable image names (img/system/Window.png, or .png_ / .rpgmvp when encrypted). A few
+ * commercial games rename every file to a hash (16 hex digits, no extension) and rely on their own player to map them
+ * back. Such a game cannot be read by this runtime. */
+static int looks_protected(const char* root) {
+	char img[256], sys[256], dir[1000];
+	if (!find_entry(root, "img", img, sizeof img, NULL)) return 0;
+	snprintf(dir, sizeof dir, "%s/%s", root, img);
+	if (!find_entry(dir, "system", sys, sizeof sys, NULL)) return 0;
+	snprintf(dir, sizeof dir, "%s/%s/%s", root, img, sys);
+	DIR* d = opendir(dir);
+	if (!d) return 0;
+	int total = 0, hashed = 0;
+	struct dirent* e;
+	while ((e = readdir(d))) {
+		if (e->d_name[0] == '.' || e->d_type == DT_DIR) continue;
+		total++;
+		size_t len = strlen(e->d_name), i = 0;
+		while (i < len && strchr("0123456789abcdefABCDEF", e->d_name[i])) i++;
+		if (len == 16 && i == len) hashed++;
+	}
+	closedir(d);
+	return total >= 5 && hashed * 2 > total;
+}
+
 static int compare_games(const void* a, const void* b) {
 	return strcasecmp(((const Game*)a)->name, ((const Game*)b)->name);
 }
@@ -251,6 +280,7 @@ static void scan_dir(const char* dir, const char* rel, const char* where, int de
 			snprintf(g->path, sizeof g->path, "%s", path);
 			if (g->engine == ENGINE_MV) mv_root(path, g->root, sizeof g->root);
 			else snprintf(g->root, sizeof g->root, "%s", path);
+			g->protected_files = (g->engine == ENGINE_MV || g->engine == ENGINE_MZ) ? looks_protected(g->root) : 0;
 			snprintf(g->name, sizeof g->name, "%s", name);
 			g->where = where;
 			g->missing_rtp[0] = '\0';
@@ -475,6 +505,11 @@ static int start_game(const Game* g, int confirmed, char* message, size_t messag
 	const char* engine_name = g->engine == ENGINE_EASYRPG ? "EasyRPG Player" : web_engine ? "Outsider" : "mkxp-z";
 	if (access(elf, F_OK) != 0) {
 		snprintf(message, message_size, "%s is not installed (%s is missing).", engine_name, elf);
+		return -1;
+	}
+
+	if (g->protected_files) {
+		snprintf(message, message_size, "%s", PROTECTED_TEXT);
 		return -1;
 	}
 
@@ -800,7 +835,7 @@ static void draw_screen(int selected, int scroll, const char* message) {
 		int y = LIST_TOP + row * ROW_H;
 		int usable = 1;
 		if (i == selected) fill(60, y, SCREEN_W - 120, ROW_H - 6, 52, 84, 196);
-		if (games[i].missing_rtp[0]) draw_text(font_mid, "!", 68, y + 6, (SDL_Color){255, 120, 90, 255});
+		if (games[i].missing_rtp[0] || games[i].protected_files) draw_text(font_mid, "!", 68, y + 6, (SDL_Color){255, 120, 90, 255});
 		SDL_Color c = usable ? white : dim;
 		draw_text_fit(font_mid, games[i].name, 90, y + 6, 1000, c);
 		draw_text(font_small, engine_label(games[i].engine), 1130, y + 12, usable ? gold : dim);
@@ -923,6 +958,7 @@ int main(void) {
 		         "! This game needs the RTP \"%s\". Put a folder with that name into a folder called \"rtp\" on your USB stick (or /data/rtp).",
 		         games[0].missing_rtp);
 	}
+	if (game_count > 0 && games[0].protected_files) snprintf(message, sizeof message, "%s", PROTECTED_MESSAGE);
 	last_run_message(message, sizeof message);
 	int running = 1;
 
@@ -1058,6 +1094,7 @@ int main(void) {
 				         "! This game needs the RTP \"%s\". Put a folder with that name into a folder called \"rtp\" on your USB stick (or /data/rtp).",
 				         games[selected].missing_rtp);
 			}
+			if (games[selected].protected_files) snprintf(message, sizeof message, "%s", PROTECTED_MESSAGE);
 			dirty = 1;
 		}
 
