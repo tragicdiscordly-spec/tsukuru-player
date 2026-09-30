@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the folder "rpgmaker-ps5" that installs RPG Maker on a PS5 from a USB stick, without a PC.
+# Builds the folder "tsukuru-player" that installs Tsukuru Player on a PS5 from a USB stick, without a PC.
 #
 # Usage: make-usb-bundle.sh [output-dir]      (default: dist)
 #
@@ -11,13 +11,13 @@
 #   OSMESA       libOSMesa.so.8 as it goes to the console (stripped)               [$HB/lib/libOSMesa.so.8]
 #   FONT         the launcher's font                                               [$HB/rpgmaker/font.ttf]
 #
-# The result: <output-dir>/rpgmaker-ps5/ with install.elf, install.html, README.txt and files/. Copy that folder to
+# The result: <output-dir>/tsukuru-player/ with install.elf, install.html, README.txt and files/. Copy that folder to
 # the root of a USB stick (exFAT), plug it into the console, start websrv and open install.html (see README.txt).
 set -eu
 
 HERE="$(dirname "$(realpath "$0")")"
 REPO="$HERE/.."
-OUT="${1:-$REPO/dist}/rpgmaker-ps5"
+OUT="${1:-$REPO/dist}/tsukuru-player"
 HB="${HB:-$REPO/../build/homebrew}"
 LAUNCHER="${LAUNCHER:-$REPO/launcher/launcher.elf}"
 OUTSIDER_SRC="${OUTSIDER_SRC:-$HOME/easyrpg/mv/outsider}"

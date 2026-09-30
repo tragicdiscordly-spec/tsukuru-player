@@ -1,10 +1,10 @@
-RPG Maker for the PlayStation 5 - install from this USB stick
+Tsukuru Player for the PlayStation 5 - install from this USB stick
 =============================================================
 
 You need a PS5 that is already jailbroken (the ELF loader on port 9021 has to be running), and a phone or
 computer on the same Wi-Fi/network as the console. No PC is needed.
 
-1. Copy this whole folder ("rpgmaker-ps5") to the top level of a USB stick (exFAT or FAT32) and plug the
+1. Copy this whole folder ("tsukuru-player") to the top level of a USB stick (exFAT or FAT32) and plug the
    stick into the console. (Any computer, or a phone with a card reader/OTG adapter, can do this copy.)
 
 2. Jailbreak the console and start "websrv" (web launcher, port 8080) from your payload menu.
@@ -15,13 +15,13 @@ computer on the same Wi-Fi/network as the console. No PC is needed.
 4. On your phone (or any computer on the same network) open this address in a browser, with YOUR console's
    address instead of 192.168.1.1 (copy and paste it, then change the numbers):
 
-       http://192.168.1.1:8080/fs/mnt/usb0/rpgmaker-ps5/install.html
+       http://192.168.1.1:8080/fs/mnt/usb0/tsukuru-player/install.html
 
    If the page is empty or "not found", the stick is not usb0: try usb1, usb2, ... in place of usb0.
    (On the console's own browser, if it lets you type an address, use 127.0.0.1 instead of the IP address.)
 
 5. Tap "Install". Notifications in the corner of the TV show the progress; it takes a minute or two. When it says
-   "RPG Maker installed", open the "RPG Maker" tile on the home screen (websrv has to be running; a web page shows
+   "Tsukuru Player installed", open the "Tsukuru Player" tile on the home screen (websrv has to be running; a web page shows
    for a moment and then the launcher starts). The same page updates an existing install. The launcher shows the
    console's address in the bottom right corner, so you can find it again.
 
@@ -46,7 +46,7 @@ What is installed
 /data/homebrew/easyrpg    EasyRPG Player (RPG Maker 2000 and 2003)
 /data/homebrew/mkxp-z     mkxp-z (RPG Maker XP, VX and VX Ace)
 /user/homebrew/lib        the software OpenGL library
-and the "RPG Maker" tile on the home screen.
+and the "Tsukuru Player" tile on the home screen.
 
 The installer only writes to those places. It needs about 140 MB on the console.
 

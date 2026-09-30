@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <!-- dont request favicon -->
     <link rel="icon" href="data:,">
-    <title>Install RPG Maker</title>
+    <title>Install Tsukuru Player</title>
     <style>
       body { background:#101830; color:#fff; font:20px sans-serif; padding:24px; max-width:900px; margin:auto; }
       h1 { font-size:34px; margin:0 0 16px 0; }
@@ -15,8 +15,8 @@
     </style>
   </head>
   <body>
-    <h1>RPG Maker for PS5</h1>
-    <p id="msg">Install or update RPG Maker from this USB stick.</p>
+    <h1>Tsukuru Player</h1>
+    <p id="msg">Install or update Tsukuru Player from this USB stick.</p>
     <p><button id="go">Install</button></p>
     <p id="hint" class="dim"></p>
     <div id="after" style="display:none">
@@ -27,7 +27,7 @@
     </div>
     <script>
       // Opened from the USB stick through websrv, from a phone on the same network or from the console's own browser
-      // (http://<console address>:8080/fs/mnt/usb0/rpgmaker-ps5/install.html). The button asks websrv to start install.elf
+      // (http://<console address>:8080/fs/mnt/usb0/tsukuru-player/install.html). The button asks websrv to start install.elf
       // from the same folder; the installer copies the programs to the console and shows its progress as notifications
       // on the TV.
       const msg = document.getElementById('msg');
@@ -41,7 +41,7 @@
           .then(r => {
             if (r.ok) {
               msg.textContent = 'The installer is running. Watch the notifications on the TV; it takes a minute or two.';
-              hint.textContent = 'When it says "RPG Maker installed", open the RPG Maker tile on the home screen (websrv has to be running).';
+              hint.textContent = 'When it says "Tsukuru Player installed", open the Tsukuru Player tile on the home screen (websrv has to be running).';
               document.getElementById('after').style.display = 'block';
             } else {
               msg.textContent = 'Could not start the installer (HTTP ' + r.status + ').';

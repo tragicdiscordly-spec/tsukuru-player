@@ -1,4 +1,4 @@
-/* Installs (or removes) an "EasyRPG" tile on the PS5 home screen.
+/* Installs (or removes) an "Tsukuru Player" tile on the PS5 home screen.
  *
  * A home screen app is a folder in /user/app/<title id> with sce_sys/param.json and icon0.png; the
  * param.json's deeplinkUri is opened when the tile is selected. Ours opens a small page served by
@@ -104,14 +104,14 @@ main(int argc, char *argv[]) {
 
   if((err=sceAppInstUtilInitialize())) {
     printf("sceAppInstUtilInitialize: error 0x%08X\n", err);
-    notify("EasyRPG tile: sceAppInstUtilInitialize failed");
+    notify("Tsukuru Player tile: sceAppInstUtilInitialize failed");
     return -1;
   }
 
   sceAppInstUtilAppUnInstall(TITLE_ID);
 
 #ifdef UNINSTALL
-  notify("EasyRPG tile removed");
+  notify("Tsukuru Player tile removed");
   return 0;
 #else
   mkdir("/user/app/"TITLE_ID, 0755);
@@ -121,17 +121,17 @@ main(int argc, char *argv[]) {
      install_file("/user/app/"TITLE_ID"/sce_sys/icon0.png", icon0, icon0_size) ||
      install_file("/user/app/"TITLE_ID"/sce_sys/param.json", param, param_size)) {
     perror("install_file");
-    notify("EasyRPG tile: could not write files");
+    notify("Tsukuru Player tile: could not write files");
     return -1;
   }
 
   if((err=install_app(TITLE_ID, "/user/app/"))) {
     printf("install_app: error 0x%08X\n", err);
-    notify("EasyRPG tile: install failed");
+    notify("Tsukuru Player tile: install failed");
     return -1;
   }
 
-  notify("EasyRPG tile installed");
+  notify("Tsukuru Player tile installed");
   return 0;
 #endif
 }

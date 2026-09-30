@@ -43,8 +43,7 @@ contact address the repository publishes; it will be looked at promptly.
 
 "RPG Maker" is a trademark of Kadokawa Corporation; "PlayStation" and "PS5" are trademarks of Sony Interactive
 Entertainment. They are used here only to say which games and which console the software works with. The project is not
-made, approved or supported by either company. The home screen tile is currently labelled "RPG Maker"; before publishing,
-consider a neutral name so that nobody takes it for an official product.
+made, approved or supported by either company. The project is called "Tsukuru Player" (and the home screen tile says so) so that nobody takes it for an official product.
 
 ## Licensing of the project
 

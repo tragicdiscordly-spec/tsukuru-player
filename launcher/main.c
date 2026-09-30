@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
  * Copyright (c) 2026 the PS5 port contributors */
-/* RPG Maker launcher for the PS5.
+/* Tsukuru Player (the launcher) for the PS5.
  *
  * Lists the game folders found in /data/games and on USB sticks ("games" folder), works out which
  * RPG Maker generation each one is from its files, and starts the matching engine through the
@@ -573,7 +573,7 @@ static void settings_load(void) {
 static void settings_save(void) {
 	FILE* f = fopen(SETTINGS_PATH, "w");
 	if (!f) return;
-	fprintf(f, "# written by the RPG Maker launcher (Settings)\n");
+	fprintf(f, "# written by the Tsukuru Player launcher (Settings)\n");
 	for (int i = 0; i < PAD_BUTTONS; i++) fprintf(f, "map.%s=%d\n", pad_buttons[i].key, settings.map[i]);
 	for (int i = 0; i < PAD_BUTTONS; i++) fprintf(f, "key.%s=%d\n", pad_buttons[i].key, settings.key[i]);
 	fprintf(f, "scale=%d\npointer=%d\n", settings.scale, settings.pointer);
@@ -677,7 +677,7 @@ static void draw_screen(int selected, int scroll, const char* message) {
 
 	fill(0, 0, SCREEN_W, SCREEN_H, 16, 20, 42);
 	fill(0, 0, SCREEN_W, 150, 26, 34, 74);
-	draw_text(font_big, "RPG Maker", 90, 30, white);
+	draw_text(font_big, "Tsukuru Player", 90, 30, white);
 	char sub[128];
 	snprintf(sub, sizeof sub, "%d game%s", game_count, game_count == 1 ? "" : "s");
 	draw_text(font_mid, sub, SCREEN_W - 90 - text_width(font_mid, sub), 62, dim);
@@ -786,7 +786,7 @@ static TTF_Font* open_font(int size) {
 int main(void) {
 	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) != 0) return 1;
 	if (TTF_Init() != 0) return 1;
-	SDL_Window* win = SDL_CreateWindow("RPG Maker", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, SCREEN_W, SCREEN_H,
+	SDL_Window* win = SDL_CreateWindow("Tsukuru Player", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, SCREEN_W, SCREEN_H,
 	                                   SDL_WINDOW_FULLSCREEN);
 	if (!win) return 1;
 	ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);

@@ -1,4 +1,6 @@
-# RPG Maker on the PS5
+# Tsukuru Player
+
+RPG Maker games on a jailbroken PlayStation 5.
 
 Play **RPG Maker 2000, 2003, XP, VX, VX Ace, MV and MZ** games on a **jailbroken PlayStation 5**:
 
@@ -8,7 +10,7 @@ Play **RPG Maker 2000, 2003, XP, VX, VX Ace, MV and MZ** games on a **jailbroken
 * **RPG Maker MV / MZ** games run on the Outsider runtime (QuickJS, SoLoud and a software OpenGL renderer; the game's own
   scripts and plugins run unchanged).
 * A small **launcher** app lists your games (from the console or a USB stick), picks the right engine
-  and starts it. One home screen tile: **RPG Maker**.
+  and starts it. One home screen tile: **Tsukuru Player**.
 
 Both engines are built with the open source [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk)
 and run as homebrew. Everything here is built from source.
@@ -29,8 +31,8 @@ programs built from this repository, and the games you own.
 
 ### Installing without a PC
 
-`scripts/make-usb-bundle.sh` builds a folder, `rpgmaker-ps5`, that installs everything from a USB stick: copy it to the
-stick, open its `install.html` from a phone on the same network (`http://<console address>:8080/fs/mnt/usb0/rpgmaker-ps5/install.html`)
+`scripts/make-usb-bundle.sh` builds a folder, `tsukuru-player`, that installs everything from a USB stick: copy it to the
+stick, open its `install.html` from a phone on the same network (`http://<console address>:8080/fs/mnt/usb0/tsukuru-player/install.html`)
 and tap Install. `installer/README-usb.txt` (copied into the folder) has the steps.
 
 ### Every time you want to play

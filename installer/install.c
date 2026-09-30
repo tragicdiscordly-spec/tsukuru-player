@@ -1,17 +1,17 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
  * Copyright (c) 2026 the PS5 port contributors */
-/* Installs RPG Maker for the PS5 from a USB stick, without a PC.
+/* Installs Tsukuru Player for the PS5 from a USB stick, without a PC.
  *
- * Put the "rpgmaker-ps5" folder (made by scripts/make-usb-bundle.sh) on a USB stick, start websrv on the console
+ * Put the "tsukuru-player" folder (made by scripts/make-usb-bundle.sh) on a USB stick, start websrv on the console
  * and open install.html from the stick in the console's web browser. That page starts this program, which
  *
  *   - copies the folders in <bundle>/files/homebrew to /data/homebrew
  *   - copies the files in <bundle>/files/lib to /user/homebrew/lib
- *   - installs the "RPG Maker" tile on the home screen
+ *   - installs the "Tsukuru Player" tile on the home screen
  *
  * and shows its progress as notifications. Files that are already there unchanged are skipped, so running it again
  * is an update. It only writes to the three places above. It is given the bundle folder as its first argument
- * (install.html does that); without one it looks for rpgmaker-ps5/files on the USB sticks.
+ * (install.html does that); without one it looks for tsukuru-player/files on the USB sticks.
  *
  * For testing, INSTALL_DST_ROOT=<dir> puts everything below <dir> instead (and leaves the tile alone).
  *
@@ -319,7 +319,7 @@ main(int argc, char *argv[]) {
   } else {
     for(int i=0; i<8 && !bundle[0]; i++) {
       char candidate[64];
-      snprintf(candidate, sizeof(candidate), "/mnt/usb%d/rpgmaker-ps5", i);
+      snprintf(candidate, sizeof(candidate), "/mnt/usb%d/tsukuru-player", i);
       if(is_dir(candidate)) {
         snprintf(bundle, sizeof(bundle), "%s", candidate);
       }
@@ -328,11 +328,11 @@ main(int argc, char *argv[]) {
 
   snprintf(src, sizeof(src), "%s/files", bundle);
   if(!bundle[0] || !is_dir(src)) {
-    notify("RPG Maker installer: the folder rpgmaker-ps5 was not found on the USB stick");
+    notify("Tsukuru Player installer: the folder tsukuru-player was not found on the USB stick");
     return 1;
   }
 
-  notify("RPG Maker installer: installing from %s ...", bundle);
+  notify("Tsukuru Player installer: installing from %s ...", bundle);
 
   static const struct { const char* from; const char* to; } parts[] = {
     { "homebrew", "/data/homebrew" },
@@ -367,7 +367,7 @@ main(int argc, char *argv[]) {
 	continue;
       }
       if(S_ISDIR(st.st_mode)) {
-	notify("RPG Maker installer: copying %s ...", e->d_name);
+	notify("Tsukuru Player installer: copying %s ...", e->d_name);
 	if(copy_tree(sub_from, sub_to)) {
 	  failed++;
 	}
@@ -382,22 +382,22 @@ main(int argc, char *argv[]) {
   }
 
   if(failed) {
-    notify("RPG Maker installer: %d parts could not be copied (USB stick full or removed?)", failed);
+    notify("Tsukuru Player installer: %d parts could not be copied (USB stick full or removed?)", failed);
     return 1;
   }
 
   if(dst_root[0]) {
-    notify("RPG Maker installer (test): copied %llu MB, %llu files unchanged", (unsigned long long)(bytes_copied >> 20),
+    notify("Tsukuru Player installer (test): copied %llu MB, %llu files unchanged", (unsigned long long)(bytes_copied >> 20),
 	   (unsigned long long)files_skipped);
     return 0;
   }
 
   if(install_tile()) {
-    notify("RPG Maker installer: the files are copied, but the home screen tile could not be installed");
+    notify("Tsukuru Player installer: the files are copied, but the home screen tile could not be installed");
     return 1;
   }
 
-  notify("RPG Maker installed (%llu MB copied, %llu files were up to date). Open the RPG Maker tile on the home screen.",
+  notify("Tsukuru Player installed (%llu MB copied, %llu files were up to date). Open the Tsukuru Player tile on the home screen.",
 	 (unsigned long long)(bytes_copied >> 20), (unsigned long long)files_skipped);
 
   char ip[64];
