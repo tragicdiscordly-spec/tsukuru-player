@@ -57,8 +57,8 @@ done
 
 cp "$HB/easyrpg/eboot.elf" "$OUT/files/homebrew/easyrpg/eboot.elf"
 cp "$HB/mkxp-z/eboot.elf" "$OUT/files/homebrew/mkxp-z/eboot.elf"
-# stand-in for Win32API (Windows DLL calls in XP/VX/Ace games), loaded by mkxp-z through MKXP_PRELOAD
-cp "$REPO/extras/mkxp-z/win32api.rb" "$OUT/files/homebrew/mkxp-z/win32api.rb"
+# compatibility script for XP/VX/Ace games (Zlib, Win32API stand-in), loaded by mkxp-z through MKXP_PRELOAD
+cp "$REPO/extras/mkxp-z/rgss_compat.rb" "$OUT/files/homebrew/mkxp-z/rgss_compat.rb"
 for e in easyrpg mkxp-z; do
     if [ -d "$HB/$e/sce_sys" ]; then cp "$HB/$e/sce_sys"/* "$OUT/files/homebrew/$e/sce_sys/"; fi
 done

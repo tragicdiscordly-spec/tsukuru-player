@@ -12,7 +12,7 @@ index 3d89733..70ecab7 100644
  #elif MKXPZ_BUILD_XCODE
  #define FLUID_LIB "@rpath/libfluidsynth.dylib"
 diff --git a/src/config.cpp b/src/config.cpp
-index 39451b7..22a804f 100644
+index 39451b7..27cffc0 100644
 --- a/src/config.cpp
 +++ b/src/config.cpp
 @@ -131,7 +131,11 @@ void Config::read(int argc, char *argv[]) {
@@ -27,7 +27,19 @@ index 39451b7..22a804f 100644
          {"fixedAspectRatio", true},
          {"smoothScaling", false},
          {"vsync", false},
-@@ -273,6 +277,12 @@ try { exp } catch (...) {}
+@@ -225,6 +229,11 @@ try { exp } catch (...) {}
+     SET_STRINGOPT(dataPathApp, dataPathApp);
+     SET_STRINGOPT(iconPath, iconPath);
+     SET_STRINGOPT(execName, execName);
++#ifdef __FreeBSD__
++    /* Games whose program is not called Game.exe (Uranium.exe reads Uranium.ini and Uranium.rgssad). */
++    if (const char *envExec = getenv("MKXP_EXECNAME"))
++        execName = envExec;
++#endif
+     SET_OPT(allowSymlinks, boolean);
+     SET_OPT(pathCache, boolean);
+     SET_OPT_CUSTOMKEY(jit.enabled, JITEnable, boolean);
+@@ -273,6 +282,12 @@ try { exp } catch (...) {}
      SET_OPT(enableReset, boolean);
      SET_OPT(enableSettings, boolean);
      SET_STRINGOPT(midi.soundFont, midiSoundFont);
@@ -40,7 +52,7 @@ index 39451b7..22a804f 100644
      SET_OPT_CUSTOMKEY(midi.chorus, midiChorus, boolean);
      SET_OPT_CUSTOMKEY(midi.reverb, midiReverb, boolean);
      SET_OPT_CUSTOMKEY(SE.sourceCount, SESourceCount, integer);
-@@ -281,6 +291,34 @@ try { exp } catch (...) {}
+@@ -281,6 +296,34 @@ try { exp } catch (...) {}
      
      fillStringVec(opts["preloadScript"], preloadScripts);
      fillStringVec(opts["RTP"], rtps);

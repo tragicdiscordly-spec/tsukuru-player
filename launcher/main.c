@@ -67,6 +67,7 @@ typedef struct {
 	const char* where;
 	Engine engine;
 	char missing_rtp[128]; /* RTP names the game asks for that are not installed (XP/VX/Ace only) */
+	char exec_name[128];   /* XP/VX/Ace: "Uranium" when the game's program is Uranium.exe (reads Uranium.ini); "" for Game.exe */
 } Game;
 
 static void collect_rtps(const char* dir, char* joined, size_t joined_size, char* missing, size_t missing_size);
@@ -150,8 +151,35 @@ static int ini_value_in(const char* dir, const char* file, const char* key, char
 	return found;
 }
 
+/* The ini file of an XP/VX/Ace game: "Game.ini", or "<name>.ini" when the game's program is called something else
+ * (Uranium.exe reads Uranium.ini and Uranium.rgssad). */
+static int find_game_ini(const char* dir, char* out, size_t out_size) {
+	if (has_entry(dir, "Game.ini")) {
+		snprintf(out, out_size, "Game.ini");
+		return 1;
+	}
+	DIR* d = opendir(dir);
+	if (!d) return 0;
+	struct dirent* e;
+	int found = 0;
+	while ((e = readdir(d))) {
+		size_t len = strlen(e->d_name);
+		char scripts[64];
+		if (len < 5 || strcasecmp(e->d_name + len - 4, ".ini") != 0) continue;
+		if (ini_value_in(dir, e->d_name, "Scripts", scripts, sizeof scripts)) {
+			snprintf(out, out_size, "%s", e->d_name);
+			found = 1;
+			break;
+		}
+	}
+	closedir(d);
+	return found;
+}
+
 static int ini_value(const char* dir, const char* key, char* out, size_t out_size) {
-	return ini_value_in(dir, "Game.ini", key, out, out_size);
+	char name[256];
+	if (!find_game_ini(dir, name, sizeof name)) return 0;
+	return ini_value_in(dir, name, key, out, out_size);
 }
 
 /* Like has_entry(), for a file inside a subfolder of `dir` ("js", "www/js"). Every name is matched ignoring
@@ -226,6 +254,13 @@ static void scan_dir(const char* dir, const char* rel, const char* where, int de
 			snprintf(g->name, sizeof g->name, "%s", name);
 			g->where = where;
 			g->missing_rtp[0] = '\0';
+			g->exec_name[0] = '\0';
+			if (g->engine == ENGINE_XP || g->engine == ENGINE_VX || g->engine == ENGINE_ACE) {
+				char ini[256];
+				if (find_game_ini(path, ini, sizeof ini) && strcasecmp(ini, "Game.ini") != 0) {
+					snprintf(g->exec_name, sizeof g->exec_name, "%.*s", (int)strlen(ini) - 4, ini);
+				}
+			}
 			if (g->engine == ENGINE_XP || g->engine == ENGINE_VX || g->engine == ENGINE_ACE) {
 				char joined[1500];
 				collect_rtps(path, joined, sizeof joined, g->missing_rtp, sizeof g->missing_rtp);
@@ -380,7 +415,7 @@ static void easyrpg_rtp_check(const char* dir, char* missing, size_t missing_siz
 /* The engines write their output to this file (MKXP_LOG / RMMZ_LOG) so that the next start of the launcher can
  * say why a game closed. */
 #define LAST_RUN_LOG "/data/homebrew/last-run.log"
-#define MKXP_PRELOAD_RB "/data/homebrew/mkxp-z/win32api.rb"
+#define MKXP_PRELOAD_RB "/data/homebrew/mkxp-z/rgss_compat.rb"
 
 /* If the game that was run last reported an error, puts the last such line into `message`. */
 static void last_run_message(char* message, size_t size) {
@@ -482,6 +517,12 @@ static int start_game(const Game* g, int confirmed, char* message, size_t messag
 			return 1;
 		}
 		snprintf(env, sizeof env, "HOME=/data/homebrew/mkxp-z SRCDIR=%s MKXP_LOG=" LAST_RUN_LOG, path_esc);
+		if (g->exec_name[0]) {
+			char exec_esc[300];
+			escape_arg(g->exec_name, exec_esc, sizeof exec_esc);
+			size_t len = strlen(env);
+			snprintf(env + len, sizeof env - len, " MKXP_EXECNAME=%s", exec_esc);
+		}
 		if (access(MKXP_PRELOAD_RB, R_OK) == 0) {
 			size_t len = strlen(env);
 			snprintf(env + len, sizeof env - len, " MKXP_PRELOAD=" MKXP_PRELOAD_RB);
