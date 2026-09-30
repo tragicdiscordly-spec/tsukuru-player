@@ -42,8 +42,9 @@ and tap Install. `installer/README-usb.txt` (copied into the folder) has the ste
    * From a PC: run **`start-ps5.bat`** (or `python scripts/start_ps5.py`).
    * Or without a PC: put `websrv-ps5.elf` and `ftpsrv-ps5.elf` in `/data/etaHEN/payloads/` and turn on
      auto start for them in etaHEN's payload menu.
-3. Select the **RPG Maker** tile on the home screen (a page opens for a moment, then the launcher). Move
-   with the D-pad or left stick, press **Cross** to play, **Triangle** to rescan, **L1/R1** to page.
+3. Select the **Tsukuru Player** tile on the home screen (a page opens for a moment, then the launcher). Move
+   with the D-pad or left stick, press **Cross** to play, **Triangle** to rescan, **Square** to delete a game
+   stored on the console (press it twice; games on a USB stick are never deleted), **L1/R1** to page.
 
 > The FTP server and web launcher have no password and give full access to the console's files while
 > they run. Only use this on a network you trust. They stop when the console restarts.
@@ -57,6 +58,18 @@ and tap Install. `installer/README-usb.txt` (copied into the folder) has the ste
 
 The launcher works out the RPG Maker version from the game's files. Saves are written into the game's
 own folder.
+
+### Games that do not work
+
+Not every game runs. If a game closes right after it starts, the launcher says why the next time you open it
+(the last error the game printed). Typical reasons:
+
+* **XP/VX/Ace games that call Windows DLLs** (`Win32API`, for Steam, window tricks, key state, ...). A stand-in
+  class answers every call with 0, which is enough for many games (for example Steam achievements), but a game that
+  really needs the DLL (Pokemon Uranium, for example) will not work.
+* **MV/MZ games that use their own file protection** (hashed file names, a modified player) cannot be read; the
+  project does not try to get around that.
+* **MV/MZ plugins that need Node.js features** (for example `Buffer`) fail to load; the game may still run without them.
 
 ### RTP (RPG Maker's shared default graphics and sounds)
 

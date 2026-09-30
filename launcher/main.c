@@ -377,6 +377,61 @@ static void easyrpg_rtp_check(const char* dir, char* missing, size_t missing_siz
 	snprintf(missing, missing_size, "2000 or 2003");
 }
 
+/* The engines write their output to this file (MKXP_LOG / RMMZ_LOG) so that the next start of the launcher can
+ * say why a game closed. */
+#define LAST_RUN_LOG "/data/homebrew/last-run.log"
+#define MKXP_PRELOAD_RB "/data/homebrew/mkxp-z/win32api.rb"
+
+/* If the game that was run last reported an error, puts the last such line into `message`. */
+static void last_run_message(char* message, size_t size) {
+	FILE* f = fopen(LAST_RUN_LOG, "r");
+	if (!f) return;
+	char line[700], found[700] = "";
+	while (fgets(line, sizeof line, f)) {
+		if (strstr(line, "CRASH") || strstr(line, "Exception") || strstr(line, "Error)") || strstr(line, "Error:") ||
+		    strcasestr(line, "unable to") || strcasestr(line, "cannot")) {
+			line[strcspn(line, "\r\n")] = '\0';
+			snprintf(found, sizeof found, "%s", line);
+		}
+	}
+	fclose(f);
+	unlink(LAST_RUN_LOG);
+	if (found[0]) snprintf(message, size, "The last game reported: %s", found);
+}
+
+/* --- deleting a game from the console --- */
+
+/* Removes a file or a whole folder. Returns 0 when everything is gone. */
+static int remove_tree(const char* path, int depth) {
+	struct stat st;
+	if (depth > 24 || lstat(path, &st) != 0) return -1;
+	if (!S_ISDIR(st.st_mode)) return unlink(path);
+	int rc = 0;
+	/* Entries are removed while the folder is read, so read it again until nothing is left. */
+	for (int pass = 0; pass < 50; pass++) {
+		DIR* d = opendir(path);
+		if (!d) return -1;
+		int seen = 0;
+		struct dirent* e;
+		while ((e = readdir(d))) {
+			if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+			char child[1400];
+			snprintf(child, sizeof child, "%s/%s", path, e->d_name);
+			seen++;
+			if (remove_tree(child, depth + 1) != 0) rc = -1;
+		}
+		closedir(d);
+		if (!seen) break;
+	}
+	if (rmdir(path) != 0) rc = -1;
+	return rc;
+}
+
+/* Only folders below /data/games (the console's own storage) may be deleted from here; never anything on a USB stick. */
+static int can_delete(const Game* g) {
+	return strncmp(g->path, "/data/games/", 12) == 0 && strlen(g->path) > 12 && !strstr(g->path, "..");
+}
+
 /* Returns 0 when the engine was started, -1 on error and 1 when the game needs an RTP that is not
  * installed and `confirmed` is not set (the caller asks the player to press Cross again). */
 static int start_game(const Game* g, int confirmed, char* message, size_t message_size) {
@@ -415,7 +470,7 @@ static int start_game(const Game* g, int confirmed, char* message, size_t messag
 		/* MV and MZ games: the runtime needs no RTP. Names in the game are matched ignoring case (Windows games
 		 * rely on that) and encrypted images and sounds are decrypted as they are read. */
 		snprintf(args, sizeof args, "--game %s --shims " OUTSIDER_DIR "/shims --perf 600", path_esc);
-		snprintf(env, sizeof env, "HOME=" OUTSIDER_DIR " PS5PATH_CASE_INSENSITIVE=1");
+		snprintf(env, sizeof env, "HOME=" OUTSIDER_DIR " PS5PATH_CASE_INSENSITIVE=1 RMMZ_LOG=" LAST_RUN_LOG);
 	} else {
 		char joined[1500], missing[300], joined_esc[3000];
 		collect_rtps(g->path, joined, sizeof joined, missing, sizeof missing);
@@ -426,7 +481,11 @@ static int start_game(const Game* g, int confirmed, char* message, size_t messag
 			         missing, missing);
 			return 1;
 		}
-		snprintf(env, sizeof env, "HOME=/data/homebrew/mkxp-z SRCDIR=%s", path_esc);
+		snprintf(env, sizeof env, "HOME=/data/homebrew/mkxp-z SRCDIR=%s MKXP_LOG=" LAST_RUN_LOG, path_esc);
+		if (access(MKXP_PRELOAD_RB, R_OK) == 0) {
+			size_t len = strlen(env);
+			snprintf(env + len, sizeof env - len, " MKXP_PRELOAD=" MKXP_PRELOAD_RB);
+		}
 		if (joined[0]) {
 			escape_arg(joined, joined_esc, sizeof joined_esc);
 			size_t len = strlen(env);
@@ -713,7 +772,8 @@ static void draw_screen(int selected, int scroll, const char* message) {
 	}
 
 	fill(0, SCREEN_H - 110, SCREEN_W, 110, 26, 34, 74);
-	draw_text(font_small, "\xE2\x9C\x95  Play        \xE2\x96\xB3  Rescan        L1 / R1  Page        Options  Settings", 90, SCREEN_H - 92, dim);
+	draw_text(font_small, "\xE2\x9C\x95  Play     \xE2\x96\xB3  Rescan     \xE2\x96\xA1  Delete (console games)     L1 / R1  Page     Options  Settings", 90,
+	          SCREEN_H - 92, dim);
 	if (local_ip[0]) {
 		char addr[100];
 		snprintf(addr, sizeof addr, "Console: %s", local_ip);
@@ -814,14 +874,15 @@ int main(void) {
 		if (srow >= SETTINGS_VISIBLE) sscroll = srow - SETTINGS_VISIBLE + 1;
 	}
 
-	int selected = 0, scroll = 0, dirty = 1, hold = 0, warned = -1;
+	int selected = 0, scroll = 0, dirty = 1, hold = 0, warned = -1, delete_armed = -1;
 	Uint32 next_repeat = 0;
-	char message[400] = "";
+	char message[700] = "";
 	if (game_count > 0 && games[0].missing_rtp[0]) {
 		snprintf(message, sizeof message,
 		         "! This game needs the RTP \"%s\". Put a folder with that name into a folder called \"rtp\" on your USB stick (or /data/rtp).",
 		         games[0].missing_rtp);
 	}
+	last_run_message(message, sizeof message);
 	int running = 1;
 
 	while (running) {
@@ -863,7 +924,32 @@ int main(void) {
 				continue;
 			}
 			if (e.type == SDL_JOYBUTTONDOWN) {
+				if (delete_armed >= 0 && e.jbutton.button != 2) {
+					delete_armed = -1; /* any other button cancels */
+					message[0] = '\0';
+					dirty = 1;
+				}
 				switch (e.jbutton.button) {
+				case 2: /* Square: delete a game that is stored on the console */
+					if (game_count == 0) break;
+					if (!can_delete(&games[selected])) {
+						snprintf(message, sizeof message, "Only games stored on the console can be deleted here. Games on a USB stick stay on the stick.");
+					} else if (delete_armed != selected) {
+						delete_armed = selected;
+						snprintf(message, sizeof message, "Delete \"%s\" from the console? Press Square again to delete it, any other button to cancel.",
+						         games[selected].name);
+					} else {
+						char name[256];
+						snprintf(name, sizeof name, "%s", games[selected].name);
+						int rc = remove_tree(games[selected].path, 0);
+						delete_armed = -1;
+						scan_games();
+						if (selected >= game_count) selected = game_count ? game_count - 1 : 0;
+						if (scroll > selected) scroll = selected;
+						snprintf(message, sizeof message, rc == 0 ? "Deleted \"%s\"." : "Could not delete all of \"%s\".", name);
+					}
+					dirty = 1;
+					break;
 				case 6: /* Options */
 					screen = 1;
 					dirty = 1;
@@ -924,6 +1010,7 @@ int main(void) {
 			if (selected < scroll) scroll = selected;
 			if (selected >= scroll + VISIBLE_ROWS) scroll = selected - VISIBLE_ROWS + 1;
 			warned = -1;
+			delete_armed = -1;
 			message[0] = '\0';
 			if (games[selected].missing_rtp[0]) {
 				snprintf(message, sizeof message,

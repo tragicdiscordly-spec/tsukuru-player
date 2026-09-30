@@ -152,6 +152,7 @@ copy_file(const char* src, const char* dst, const struct stat* st) {
   struct stat old;
   struct timeval times[2];
   static char buf[1 << 20];
+  char tmp[1100];
   FILE *in, *out;
   size_t n;
 
@@ -165,7 +166,10 @@ copy_file(const char* src, const char* dst, const struct stat* st) {
     printf("cannot read %s: %s\n", src, strerror(errno));
     return -1;
   }
-  if(!(out=fopen(dst, "wb"))) {
+  /* Write to a temporary name and rename it over the old file. A program that is still running (or waiting in the
+   * background) has the old file mapped; overwriting it in place would crash that program. */
+  snprintf(tmp, sizeof(tmp), "%s.new", dst);
+  if(!(out=fopen(tmp, "wb"))) {
     printf("cannot write %s: %s\n", dst, strerror(errno));
     fclose(in);
     return -1;
@@ -175,6 +179,7 @@ copy_file(const char* src, const char* dst, const struct stat* st) {
       printf("cannot write %s: %s\n", dst, strerror(errno));
       fclose(in);
       fclose(out);
+      unlink(tmp);
       return -1;
     }
     bytes_copied += n;
@@ -182,13 +187,19 @@ copy_file(const char* src, const char* dst, const struct stat* st) {
   fclose(in);
   if(fclose(out)) {
     printf("cannot write %s: %s\n", dst, strerror(errno));
+    unlink(tmp);
     return -1;
   }
 
   times[0].tv_sec = times[1].tv_sec = st->st_mtime;
   times[0].tv_usec = times[1].tv_usec = 0;
-  utimes(dst, times);
-  chmod(dst, 0755);
+  utimes(tmp, times);
+  chmod(tmp, 0755);
+  if(rename(tmp, dst)) {
+    printf("cannot replace %s: %s\n", dst, strerror(errno));
+    unlink(tmp);
+    return -1;
+  }
   files_copied++;
   return 0;
 }

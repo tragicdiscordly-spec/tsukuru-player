@@ -12,7 +12,7 @@ index 3d89733..70ecab7 100644
  #elif MKXPZ_BUILD_XCODE
  #define FLUID_LIB "@rpath/libfluidsynth.dylib"
 diff --git a/src/config.cpp b/src/config.cpp
-index 39451b7..eb0236e 100644
+index 39451b7..22a804f 100644
 --- a/src/config.cpp
 +++ b/src/config.cpp
 @@ -131,7 +131,11 @@ void Config::read(int argc, char *argv[]) {
@@ -40,10 +40,24 @@ index 39451b7..eb0236e 100644
      SET_OPT_CUSTOMKEY(midi.chorus, midiChorus, boolean);
      SET_OPT_CUSTOMKEY(midi.reverb, midiReverb, boolean);
      SET_OPT_CUSTOMKEY(SE.sourceCount, SESourceCount, integer);
-@@ -281,6 +291,20 @@ try { exp } catch (...) {}
+@@ -281,6 +291,34 @@ try { exp } catch (...) {}
      
      fillStringVec(opts["preloadScript"], preloadScripts);
      fillStringVec(opts["RTP"], rtps);
++#ifdef __FreeBSD__
++    if (const char *envPreload = getenv("MKXP_PRELOAD")) {
++        std::string list(envPreload);
++        size_t start = 0;
++        while (start <= list.size()) {
++            size_t end = list.find(':', start);
++            if (end == std::string::npos)
++                end = list.size();
++            if (end > start)
++                preloadScripts.push_back(list.substr(start, end - start));
++            start = end + 1;
++        }
++    }
++#endif
 +#ifdef __FreeBSD__
 +    if (const char *envRtp = getenv("MKXP_RTP")) {
 +        std::string list(envRtp);
@@ -62,10 +76,41 @@ index 39451b7..eb0236e 100644
      fillStringVec(opts["rubyLoadpath"], rubyLoadpaths);
      
 diff --git a/src/main.cpp b/src/main.cpp
-index bc50eab..15bb193 100644
+index bc50eab..9a3a09d 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
-@@ -222,7 +222,7 @@ int main(int argc, char *argv[]) {
+@@ -25,6 +25,10 @@
+ 
+ #include <alc.h>
+ 
++#ifdef __FreeBSD__
++#include <fcntl.h>
++#include <unistd.h>
++#endif
+ #include <SDL.h>
+ #include <SDL_image.h>
+ #include <SDL_sound.h>
+@@ -202,6 +206,19 @@ static void setupWindowIcon(const Config &conf, SDL_Window *win) {
+ }
+ 
+ int main(int argc, char *argv[]) {
++#ifdef __FreeBSD__
++    /* The launcher asks for the output in a file (MKXP_LOG) so that it can tell the player why a game closed. */
++    if (const char *logPath = getenv("MKXP_LOG")) {
++        int fd = open(logPath, O_WRONLY | O_CREAT | O_TRUNC, 0666);
++        if (fd >= 0) {
++            dup2(fd, STDOUT_FILENO);
++            dup2(fd, STDERR_FILENO);
++            close(fd);
++            setvbuf(stdout, NULL, _IOLBF, 0);
++            setvbuf(stderr, NULL, _IONBF, 0);
++        }
++    }
++#endif
+     SDL_SetHint(SDL_HINT_VIDEO_MINIMIZE_ON_FOCUS_LOSS, "0");
+     SDL_SetHint(SDL_HINT_ACCELEROMETER_AS_JOYSTICK, "0");
+ 
+@@ -222,7 +239,7 @@ int main(int argc, char *argv[]) {
  
  #ifndef WORKDIR_CURRENT
      char dataDir[512]{};

@@ -2696,10 +2696,10 @@ index cbec9a7..2fdceda 100644
  
 diff --git a/src/platform/platform_sdl2.c b/src/platform/platform_sdl2.c
 new file mode 100644
-index 0000000..d008213
+index 0000000..c96ed80
 --- /dev/null
 +++ b/src/platform/platform_sdl2.c
-@@ -0,0 +1,1470 @@
+@@ -0,0 +1,1483 @@
 +/*
 + * SDL2 platform layer for the PlayStation 5 port of Outsider.
 + *
@@ -2710,6 +2710,7 @@ index 0000000..d008213
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + */
 +
++#include <fcntl.h>
 +#include "engine/error_handler.h"
 +#include "platform/platform.h"
 +#include "rendering/present_cpu.h"
@@ -2817,6 +2818,18 @@ index 0000000..d008213
 +static void install_crash_handler(void)
 +{
 +    /* The launcher only pipes stdout back to the developer; send error output the same way. */
++    /* RMMZ_LOG=<file>: the launcher reads the output from a file to tell the player why a game closed. */
++    {
++        const char *log_path = getenv("RMMZ_LOG");
++        if (log_path) {
++            int fd = open(log_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
++            if (fd >= 0) {
++                dup2(fd, STDOUT_FILENO);
++                close(fd);
++                setvbuf(stdout, NULL, _IOLBF, 0);
++            }
++        }
++    }
 +    dup2(STDOUT_FILENO, STDERR_FILENO);
 +
 +    {
