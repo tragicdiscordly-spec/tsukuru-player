@@ -11,6 +11,9 @@
 # * Font.exist? says yes (fonts cannot be installed here).
 # * Thread.critical (Ruby 1.8) does nothing.
 # * Key state questions (GetAsyncKeyState) are answered from the console's keyboard and gamepad.
+# * Text files: on Windows a file opened in text mode (no "b") gives "\n" for every CRLF. Games with line-based readers (JSON, INI,
+#   text tables) depend on it, so text-mode reads here do the same.
+# * DL (the old Ruby library for raw memory, used by a few key-reading scripts) has a small stand-in with a byte buffer.
 # * Win32API is the class games use to call Windows DLLs (user32, kernel32, steam_api, ...). There is no Windows here,
 #   so a call does nothing and answers 0, which is what most games expect when an optional feature (Steam
 #   achievements, window tricks, key state) is not available. A few harmless functions are answered properly. The
@@ -87,6 +90,87 @@ module Kernel
   end
 end
 
+# Windows turns CRLF into LF when a file is read in text mode. Ruby on Linux does not, so a game's own parser (made for
+# files with CRLF, tested only on Windows) meets "\r" it never expected. Reading in text mode ("rt") gives the same
+# conversion. Binary reads ("rb") and writing stay as they are.
+module RgssTextMode
+  def self.args(args, opts)
+    return args if opts.key?(:mode) || opts.key?(:binmode) || opts.key?(:newline) || opts.key?(:textmode)
+    mode = args[1]
+    if mode.nil?
+      args = args.dup
+      args[1] = "rt"
+    elsif mode.is_a?(String) && mode.start_with?("r") && mode[/\A[^:]*/] !~ /[bt]/
+      args = args.dup
+      args[1] = mode.sub(/\Ar\+?/) { |m| m + "t" }
+    end
+    args
+  end
+
+  def self.read_opts(opts)
+    return opts if opts.key?(:mode) || opts.key?(:binmode) || opts.key?(:newline) || opts.key?(:textmode)
+    opts.merge(mode: "rt")
+  end
+end
+
+class File
+  class << self
+    unless method_defined?(:__rgss_open)
+      alias_method :__rgss_open, :open
+      alias_method :__rgss_new, :new
+
+      def open(*args, **opts, &block)
+        __rgss_open(*RgssTextMode.args(args, opts), **opts, &block)
+      end
+
+      def new(*args, **opts, &block)
+        __rgss_new(*RgssTextMode.args(args, opts), **opts, &block)
+      end
+    end
+  end
+end
+
+class IO
+  class << self
+    unless method_defined?(:__rgss_read)
+      alias_method :__rgss_read, :read
+      alias_method :__rgss_readlines, :readlines
+      alias_method :__rgss_foreach, :foreach
+
+      # whole-file reads only (a length or an offset means the caller is reading raw bytes)
+      def read(name, *args, **opts)
+        opts = RgssTextMode.read_opts(opts) if args.empty? && name.is_a?(String)
+        __rgss_read(name, *args, **opts)
+      end
+
+      def readlines(name, *args, **opts)
+        opts = RgssTextMode.read_opts(opts) if name.is_a?(String)
+        __rgss_readlines(name, *args, **opts)
+      end
+
+      def foreach(name, *args, **opts, &block)
+        opts = RgssTextMode.read_opts(opts) if name.is_a?(String)
+        __rgss_foreach(name, *args, **opts, &block)
+      end
+    end
+  end
+end
+
+module Kernel
+  unless private_method_defined?(:__rgss_kernel_open)
+    alias_method :__rgss_kernel_open, :open
+
+    def open(name, *args, **opts, &block)
+      if name.is_a?(String) && !name.start_with?("|")
+        File.open(name, *args, **opts, &block)
+      else
+        __rgss_kernel_open(name, *args, **opts, &block)
+      end
+    end
+    module_function :open
+  end
+end
+
 # A game class built on Sprite / Plane / Window that never calls super in initialize (Pokemon Essentials' LargePlane)
 # has no engine object behind it. RPG Maker's player ignored dispose on such an object; mkxp-z raises "No instance
 # data for variable". Make dispose ignore it too.
@@ -126,6 +210,62 @@ class Thread
 
     def critical=(value)
       @critical = value
+    end
+  end
+end
+
+# A few scripts (Hime's AllKey, used by LonaRPG) keep the keyboard state in DL::CPtr memory and hand its address to
+# GetKeyboardState. DL does not exist in Ruby 3, so this is a byte buffer that has an "address".
+unless defined?(DL)
+  module DL
+    @next_address = 0x10000
+    @buffers = {}
+
+    class << self
+      attr_reader :buffers
+
+      def malloc(size)
+        address = @next_address
+        @next_address += (size.to_i + 15) & ~15
+        address
+      end
+
+      def free(address)
+        @buffers.delete(address)
+      end
+    end
+
+    class CPtr
+      attr_reader :size
+
+      def initialize(address = 0, size = 0)
+        @address = address.to_i
+        @size = size.to_i
+        @bytes = Array.new(@size, 0)
+        DL.buffers[@address] = self
+      end
+
+      def to_i
+        @address
+      end
+      alias_method :to_int, :to_i
+
+      def [](index, length = nil)
+        return @bytes[index] if length.nil?
+        @bytes[index, length].pack('C*')
+      end
+
+      def []=(index, value)
+        @bytes[index] = value.to_i & 0xff
+      end
+
+      def fill(bytes)
+        bytes.each_with_index { |b, i| @bytes[i] = b if i < @size }
+      end
+
+      def to_s(length = @size)
+        @bytes[0, length].pack('C*')
+      end
     end
   end
 end
@@ -186,6 +326,25 @@ class Win32API
     when /\AGetClientRect/, /\AGetWindowRect/
       Win32API.fill_rect(args[1])
       return 1
+    when /\AGetCommandLine/
+      return 'Game.exe' # the command line of the game (a string for a "P" result)
+    when /\ASystemParametersInfo/
+      if args[0].to_i == 0x30 && args[2].is_a?(String) && args[2].bytesize >= 16 # SPI_GETWORKAREA
+        args[2][0, 16] = [0, 0, 1920, 1040].pack('l4')
+        return 1
+      end
+    when /\AGetKeyboardState/
+      pointer = DL.buffers[args[0].to_i] if defined?(DL) && DL.respond_to?(:buffers)
+      if pointer
+        pointer.fill((0...256).map { |vk| Win32API.key_down?(vk) ? 0x80 : 0 })
+        return 1
+      end
+    when /\AGetKeyboardLayout/
+      return 0x0409 # English (United States)
+    when /\AMapVirtualKey/
+      return args[0].to_i if args[1].to_i == 2 # the key's own code as a character
+    when /\AAdjustWindowRect/, /\AUpdateWindow/, /\ASetWindowPos/, /\AShowWindow/
+      return 1
     when /\AReg/
       return 2 # registry: "key not found" (ERROR_FILE_NOT_FOUND)
     end
@@ -205,6 +364,22 @@ class Win32API
       0
     end
   end
+end
+
+# How deep can the game's Ruby code recurse here? One line in the game's output; deep recursive scripts (JSON
+# parsers, for example) need to know this when they fail.
+begin
+  $__rgss_probe_depth = 0
+  probe = lambda do |n|
+    $__rgss_probe_depth = n
+    probe.call(n + 1)
+  end
+  begin
+    probe.call(0)
+  rescue SystemStackError
+    STDERR.puts "ruby recursion depth limit: #{$__rgss_probe_depth}"
+  end
+rescue StandardError
 end
 
 # Development aid: MKXP_DEBUG_SHOT=<file.png>,<frame> saves the picture at that frame and logs the frame count now and
