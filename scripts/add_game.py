@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Copy RPG Maker games to the PS5's games folder over FTP.
 
-  add_game.py [-j N] GAME_FOLDER [GAME_FOLDER ...]
+  add_game.py [-j N] [--name FOLDER_NAME_ON_THE_CONSOLE] GAME_FOLDER [GAME_FOLDER ...]
 
 Each folder is copied to /data/games/<folder name>/ on the console (ftpsrv must be running, see
 start_ps5.py). Files that already exist with the same size are skipped, so an interrupted copy can
@@ -69,7 +69,7 @@ def remote_sizes(ftp):
 def looks_like_game(folder):
     """A game folder has RPG_RT.ldb (2000/2003) or Game.ini / Game.rgss*a (XP, VX, VX Ace) in it, or in
     a folder below it (downloaded games are often wrapped in an extra folder)."""
-    markers = ('rpg_rt.ldb', 'rpg_rt.lmt', 'game.ini', 'game.rgssad', 'game.rgss2a', 'game.rgss3a')
+    markers = ('rpg_rt.ldb', 'rpg_rt.lmt', 'game.ini', 'game.rgssad', 'game.rgss2a', 'game.rgss3a', 'rpg_core.js', 'rmmz_core.js')
     for root, dirs, files in os.walk(folder):
         if any(f.lower() in markers for f in files):
             return True
@@ -188,16 +188,16 @@ def prepare_movies(folder):
     convert_video.convert_game(folder)
 
 
-def add_game(folder, jobs, remote_name=None, convert_movies=True):
+def add_game(folder, jobs, remote_name=None, convert_movies=True, name=None):
     """Copy `folder` to REMOTE_ROOT/<remote_name or the folder's own name> on the console."""
     folder = os.path.abspath(folder)
-    name = remote_name or os.path.basename(folder.rstrip('\\/'))
+    name = remote_name or name or os.path.basename(folder.rstrip('\\/'))
     if not os.path.isdir(folder):
         print(f'skipping {folder}: not a folder')
         return
     if remote_name is None and not looks_like_game(folder):
-        print(f'warning: {name} does not look like an RPG Maker game (no RPG_RT.ldb, Game.ini or Game.rgss*a '
-              'next to each other), the launcher may not list it')
+        print(f'warning: {name} does not look like an RPG Maker game (no RPG_RT.ldb, Game.ini, Game.rgss*a or js/rpg_core.js '
+              'in it), the launcher may not list it')
 
     if convert_movies and remote_name is None:
         prepare_movies(folder)
@@ -289,6 +289,11 @@ def main():
         args = args[2:]
     convert = '--no-convert' not in args
     args = [a for a in args if a != '--no-convert']
+    game_name = None
+    if '--name' in args:
+        i = args.index('--name')
+        game_name = args[i + 1]
+        args = args[:i] + args[i + 2:]
     if not args:
         sys.exit(__doc__)
     try:
@@ -297,7 +302,7 @@ def main():
         sys.exit(f'Cannot reach the PS5 FTP server at {HOST}:{PORT} ({e}).\n'
                  'Run start-ps5.bat first (after jailbreaking the console).')
     for folder in args:
-        add_game(folder, jobs, convert_movies=convert)
+        add_game(folder, jobs, convert_movies=convert, name=game_name)
 
 
 if __name__ == '__main__':

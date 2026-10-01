@@ -69,10 +69,13 @@ typedef struct {
 	char missing_rtp[128]; /* RTP names the game asks for that are not installed (XP/VX/Ace only) */
 	char exec_name[128];   /* XP/VX/Ace: "Uranium" when the game's program is Uranium.exe (reads Uranium.ini); "" for Game.exe */
 	int protected_files;   /* MV/MZ: the game's files have scrambled names (its own file protection); it cannot be run */
+	int incomplete;        /* MV/MZ: the game's data is there but its js folder is not (a copy that stopped half way) */
 } Game;
 
 #define PROTECTED_TEXT "This game's files have scrambled names (its own file protection). That is usually unreadable here. Press Cross again to try anyway."
 #define PROTECTED_MESSAGE "! " PROTECTED_TEXT
+#define INCOMPLETE_TEXT "This game was not copied completely: its \"js\" folder is missing. Copy the whole game folder to the console again."
+#define INCOMPLETE_MESSAGE "! " INCOMPLETE_TEXT
 
 
 static void collect_rtps(const char* dir, char* joined, size_t joined_size, char* missing, size_t missing_size);
@@ -225,6 +228,13 @@ static int detect(const char* dir, Engine* engine) {
 	return 0;
 }
 
+/* A folder that has an MV/MZ game's data (data/System.json, maybe inside www) but no scripts: a copy that stopped half
+ * way. Listed with a warning so it is not simply missing from the list. */
+static int detect_incomplete(const char* dir) {
+	if (!has_entry_in(dir, "data", "System.json") && !has_entry_in(dir, "www/data", "System.json")) return 0;
+	return has_entry(dir, "index.html") || has_entry(dir, "package.json") || has_entry_in(dir, "www", "index.html");
+}
+
 /* The folder an MV game's scripts live in: "www" inside the game folder (desktop deployments), or the game
  * folder itself (web deployments). */
 static void mv_root(const char* dir, char* out, size_t size) {
@@ -276,7 +286,11 @@ static void scan_dir(const char* dir, const char* rel, const char* where, int de
 		snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
 		snprintf(name, sizeof name, "%s%s%s", rel, rel[0] ? " / " : "", e->d_name);
 		Game* g = &games[game_count];
-		if (detect(path, &g->engine)) {
+		int is_game = detect(path, &g->engine);
+		int is_incomplete = !is_game && detect_incomplete(path);
+		if (is_incomplete) g->engine = ENGINE_MV;
+		if (is_game || is_incomplete) {
+			g->incomplete = is_incomplete;
 			snprintf(g->path, sizeof g->path, "%s", path);
 			if (g->engine == ENGINE_MV) mv_root(path, g->root, sizeof g->root);
 			else snprintf(g->root, sizeof g->root, "%s", path);
@@ -560,6 +574,11 @@ static int start_game(const Game* g, int confirmed, char* message, size_t messag
 	const char* engine_name = g->engine == ENGINE_EASYRPG ? "EasyRPG Player" : web_engine ? "Outsider" : "mkxp-z";
 	if (access(elf, F_OK) != 0) {
 		snprintf(message, message_size, "%s is not installed (%s is missing).", engine_name, elf);
+		return -1;
+	}
+
+	if (g->incomplete) {
+		snprintf(message, message_size, "%s", INCOMPLETE_TEXT);
 		return -1;
 	}
 
@@ -890,7 +909,7 @@ static void draw_screen(int selected, int scroll, const char* message) {
 		int y = LIST_TOP + row * ROW_H;
 		int usable = 1;
 		if (i == selected) fill(60, y, SCREEN_W - 120, ROW_H - 6, 52, 84, 196);
-		if (games[i].missing_rtp[0] || games[i].protected_files) draw_text(font_mid, "!", 68, y + 6, (SDL_Color){255, 120, 90, 255});
+		if (games[i].missing_rtp[0] || games[i].protected_files || games[i].incomplete) draw_text(font_mid, "!", 68, y + 6, (SDL_Color){255, 120, 90, 255});
 		SDL_Color c = usable ? white : dim;
 		draw_text_fit(font_mid, games[i].name, 90, y + 6, 1000, c);
 		draw_text(font_small, engine_label(games[i].engine), 1130, y + 12, usable ? gold : dim);
@@ -1019,6 +1038,7 @@ int main(void) {
 		         games[0].missing_rtp);
 	}
 	if (game_count > 0 && games[0].protected_files) snprintf(message, sizeof message, "%s", PROTECTED_MESSAGE);
+	if (game_count > 0 && games[0].incomplete) snprintf(message, sizeof message, "%s", INCOMPLETE_MESSAGE);
 	last_run_message(message, sizeof message);
 	int running = 1;
 
@@ -1185,6 +1205,7 @@ int main(void) {
 				         games[selected].missing_rtp);
 			}
 			if (games[selected].protected_files) snprintf(message, sizeof message, "%s", PROTECTED_MESSAGE);
+			if (games[selected].incomplete) snprintf(message, sizeof message, "%s", INCOMPLETE_MESSAGE);
 			dirty = 1;
 		}
 

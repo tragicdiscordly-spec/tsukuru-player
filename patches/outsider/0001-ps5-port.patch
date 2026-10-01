@@ -1683,7 +1683,7 @@ index 33c7209..e031b73 100644
          if (!JS_IsUndefined(stack)) {
              const char *stack_str = JS_ToCString(ctx, stack);
 diff --git a/src/engine/game_loop.c b/src/engine/game_loop.c
-index 398d86d..b420b0c 100644
+index 398d86d..64a254e 100644
 --- a/src/engine/game_loop.c
 +++ b/src/engine/game_loop.c
 @@ -3,6 +3,7 @@
@@ -1694,7 +1694,7 @@ index 398d86d..b420b0c 100644
  #include "engine/game_loop.h"
  #include "engine/error_handler.h"
  #include "audio/audio_engine.h"
-@@ -444,6 +445,119 @@ void game_loop_request_stop(GameLoop *loop)
+@@ -444,6 +445,121 @@ void game_loop_request_stop(GameLoop *loop)
      if (loop) loop->running = false;
  }
  
@@ -1772,8 +1772,10 @@ index 398d86d..b420b0c 100644
 +        if (name) JS_FreeCString(ctx, name);
 +        if (JS_IsException(v)) { JSValue e = JS_GetException(ctx); JS_FreeValue(ctx, e); }
 +        JS_FreeValue(ctx, v);
-+        if (!on_title) return;
-+        if (strcmp(spec, "title") == 0) {      /* RMMZ_AUTOSTART=title: only start the clock of RMMZ_AUTOSCRIPT */
++        int title_mode = strcmp(spec, "title") == 0;
++        /* title mode: games whose "title" is a map (no Scene_Title) start the clock after about 15 s instead */
++        if (!on_title && !(title_mode && loop->total_frames > 900)) return;
++        if (title_mode) {      /* RMMZ_AUTOSTART=title: only start the clock of RMMZ_AUTOSCRIPT */
 +            error_handler_log(LOG_INFO, "autostart: title screen reached");
 +            script_base = loop->total_frames;
 +            state = 0;
@@ -1814,7 +1816,7 @@ index 398d86d..b420b0c 100644
  bool game_loop_step(GameLoop *loop)
  {
      if (!loop || !loop->running) return false;
-@@ -572,6 +686,8 @@ bool game_loop_step(GameLoop *loop)
+@@ -572,6 +688,8 @@ bool game_loop_step(GameLoop *loop)
  
      /* --- Debug frame limit: capture the final frame before it is swapped --- */
      loop->total_frames++;
@@ -1823,7 +1825,7 @@ index 398d86d..b420b0c 100644
      if (loop->max_frames > 0 && loop->total_frames >= loop->max_frames) {
          if (loop->screenshot_path) {
              write_screenshot(loop, loop->screenshot_path);
-@@ -608,6 +724,7 @@ bool game_loop_step(GameLoop *loop)
+@@ -608,6 +726,7 @@ bool game_loop_step(GameLoop *loop)
      /* --- Phase 5: Present --- */
      phase_start = phase_end;
  
@@ -1831,7 +1833,7 @@ index 398d86d..b420b0c 100644
      {
          /* The frame was drawn into an offscreen surface; putting it on screen
             is the renderer's job, and the window swap follows it. */
-@@ -616,11 +733,21 @@ bool game_loop_step(GameLoop *loop)
+@@ -616,11 +735,21 @@ bool game_loop_step(GameLoop *loop)
              int ww = 0, wh = 0;
              platform_get_window_size(loop->platform, &ww, &wh);
              renderer_set_output_size(r, ww, wh);
@@ -1855,7 +1857,7 @@ index 398d86d..b420b0c 100644
  
      phase_end = SDL_GetPerformanceCounter();
      loop->stats.swap_ms = ticks_to_ms(loop, phase_end - phase_start);
-@@ -634,16 +761,17 @@ bool game_loop_step(GameLoop *loop)
+@@ -634,16 +763,17 @@ bool game_loop_step(GameLoop *loop)
          loop->perf_acc.jobs_ms   += loop->stats.jobs_ms;
          loop->perf_acc.raf_ms    += loop->stats.raf_ms;
          loop->perf_acc.swap_ms   += loop->stats.swap_ms;
@@ -2437,7 +2439,7 @@ index 0000000..9457b4a
 +
 +#endif /* RMMZ_JS_POOL_ALLOC_H */
 diff --git a/src/engine/script_loader.c b/src/engine/script_loader.c
-index 0b731d2..3f284a7 100644
+index 0b731d2..4ff3408 100644
 --- a/src/engine/script_loader.c
 +++ b/src/engine/script_loader.c
 @@ -254,6 +254,7 @@ static const char *SHIM_FILES[] = {
@@ -2448,7 +2450,7 @@ index 0b731d2..3f284a7 100644
      NULL
  };
  
-@@ -288,10 +289,39 @@ static const char *RMMZ_CORE_SCRIPTS[] = {
+@@ -288,10 +289,40 @@ static const char *RMMZ_CORE_SCRIPTS[] = {
      NULL
  };
  
@@ -2485,10 +2487,11 @@ index 0b731d2..3f284a7 100644
  static const char *POST_CORE_SHIMS[] = {
      "tilemap_shim.js",
 +    "perf_post.js",
++    "picture_slots.js",
      NULL
  };
  
-@@ -315,6 +345,44 @@ static const char *LIB_SCRIPTS[] = {
+@@ -315,6 +346,44 @@ static const char *LIB_SCRIPTS[] = {
      NULL
  };
  
@@ -2533,7 +2536,7 @@ index 0b731d2..3f284a7 100644
  bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *game_dir)
  {
      if (!engine || !shim_dir || !game_dir) return false;
-@@ -325,9 +393,24 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -325,9 +394,24 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
      }
      printf("script_loader: shims loaded\n");
  
@@ -2560,7 +2563,7 @@ index 0b731d2..3f284a7 100644
          if (!path) return false;
  
          if (file_io_exists(path)) {
-@@ -336,7 +419,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -336,7 +420,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
                  fprintf(stderr, "script_loader: warning: failed to load lib: %s\n", path);
              }
              js_engine_execute_pending_jobs(engine);
@@ -2569,7 +2572,7 @@ index 0b731d2..3f284a7 100644
          } else {
              fprintf(stderr, "script_loader: warning: lib not found: %s\n", path);
          }
-@@ -345,8 +428,8 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -345,8 +429,8 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
      printf("script_loader: libraries loaded\n");
  
      /* Step 3: Load RPG Maker MZ core scripts */
@@ -2580,7 +2583,7 @@ index 0b731d2..3f284a7 100644
          if (!path) return false;
  
          if (file_io_exists(path)) {
-@@ -354,10 +437,10 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -354,10 +438,10 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
              if (!ok) {
                  /* Non-fatal: core scripts may reference PIXI features the shim lacks. */
                  fprintf(stderr, "script_loader: note: errors during %s (may be expected for PIXI deps)\n",
@@ -2593,7 +2596,7 @@ index 0b731d2..3f284a7 100644
          } else {
              fprintf(stderr, "script_loader: warning: core script not found: %s\n", path);
          }
-@@ -365,6 +448,8 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -365,6 +449,8 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
      }
      printf("script_loader: core scripts loaded\n");
  
@@ -2602,7 +2605,7 @@ index 0b731d2..3f284a7 100644
      /* Step 4: Load enabled plugins */
      char *plugins_path = join_path(game_dir, "js/plugins.js");
      if (plugins_path && file_io_exists(plugins_path)) {
-@@ -447,7 +532,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -447,7 +533,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
                      /* Logged before eval so a native crash inside a plugin
                         leaves its name as the last line of the log. */
                      printf("script_loader: plugin %s\n", plugins->entries[i].name);
@@ -2611,7 +2614,7 @@ index 0b731d2..3f284a7 100644
                      if (!ok) {
                          fprintf(stderr, "script_loader: warning: plugin error: %s\n",
                                  plugins->entries[i].name);
-@@ -470,6 +555,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -470,6 +556,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
      /* Step 4b: Post-core shims go after plugins so they win over plugin
         patches to the same engine classes (e.g. Tilemap.Layer.prototype.render). */
      for (int i = 0; POST_CORE_SHIMS[i] != NULL; i++) {
@@ -2619,7 +2622,7 @@ index 0b731d2..3f284a7 100644
          char *path = join_path(shim_dir, POST_CORE_SHIMS[i]);
          if (!path) return false;
  
-@@ -480,14 +566,22 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -480,14 +567,29 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
          js_engine_execute_pending_jobs(engine);
          free(path);
      }
@@ -2629,6 +2632,13 @@ index 0b731d2..3f284a7 100644
 +            if (file_io_exists(post)) js_engine_eval_file(engine, post);
 +            js_engine_execute_pending_jobs(engine);
 +            free(post);
++        }
++        /* picture slots on demand applies to MV as well (the MZ loop above handles MZ) */
++        char *slots = join_path(shim_dir, "picture_slots.js");
++        if (slots) {
++            if (file_io_exists(slots)) js_engine_eval_file(engine, slots);
++            js_engine_execute_pending_jobs(engine);
++            free(slots);
 +        }
 +    }
      printf("script_loader: post-core shims loaded\n");
@@ -2644,7 +2654,7 @@ index 0b731d2..3f284a7 100644
          if (!ok) {
              fprintf(stderr, "script_loader: warning: errors during main.js\n");
          }
-@@ -497,6 +591,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -497,6 +599,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
          printf("script_loader: main.js loaded\n");
      }
      free(main_path);
@@ -8669,6 +8679,52 @@ index 0000000..3f451af
 +    } catch (e) {}
 +
 +    globalThis.__perfPostApplied = applied;
++})();
+diff --git a/src/shims/picture_slots.js b/src/shims/picture_slots.js
+new file mode 100644
+index 0000000..dbc06c4
+--- /dev/null
++++ b/src/shims/picture_slots.js
+@@ -0,0 +1,40 @@
++/*
++ * Idle picture slots cost nothing.
++ *
++ * RPG Maker creates one Sprite_Picture for every picture slot the game allows (Game_Screen.maxPictures(), 100 by
++ * default) and updates all of them every frame. Some games raise the limit to 10000 with a plugin and use only a few
++ * slots. A browser's compiled JavaScript copes with ten thousand idle sprites; this interpreter needs half a second
++ * per frame for them (every plugin that wraps Sprite_Picture.update adds to it).
++ *
++ * The container of the picture sprites therefore only updates the sprites whose slot holds a picture, or that still
++ * show something from a picture that was just erased (so it disappears). All sprites stay in place, in order and with
++ * their usual index, so scripts that look a picture sprite up by number still work.
++ *
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ */
++(function() {
++    "use strict";
++
++    if (typeof Spriteset_Base === "undefined" || typeof Sprite_Picture === "undefined" ||
++        typeof Game_Screen === "undefined" || !Spriteset_Base.prototype.createPictures) return;
++
++    var MANY = 300;      /* up to this many slots the normal update is cheap enough and stays as it is */
++
++    var createPictures = Spriteset_Base.prototype.createPictures;
++    Spriteset_Base.prototype.createPictures = function() {
++        createPictures.apply(this, arguments);
++        var container = this._pictureContainer;
++        if (!container || !container.children || container.children.length <= MANY) return;
++        container.update = function() {
++            var kids = this.children;
++            var pics = $gameScreen._pictures;
++            var offset = ($gameParty && $gameParty.inBattle()) ? $gameScreen.maxPictures() : 0;
++            for (var i = 0, n = kids.length; i < n; i++) {
++                var sprite = kids[i];
++                if (pics[sprite._pictureId + offset] || sprite.bitmap || sprite._pictureName) {
++                    if (sprite.update) sprite.update();
++                }
++            }
++        };
++    };
 +})();
 diff --git a/src/shims/pixi_shim.js b/src/shims/pixi_shim.js
 index 0ad7a94..f83e4c1 100644
