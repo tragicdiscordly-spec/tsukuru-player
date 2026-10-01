@@ -860,7 +860,7 @@ static void fill(int x, int y, int w, int h, Uint8 r, Uint8 g, Uint8 b) {
 
 #define ROW_H 62
 #define LIST_TOP 200
-#define VISIBLE_ROWS 13
+#define VISIBLE_ROWS 11  /* rows end at y=882; the footer bar starts at y=970 */
 
 static void draw_screen(int selected, int scroll, const char* message) {
 	static const SDL_Color white = {235, 238, 250, 255}, dim = {150, 160, 190, 255}, gold = {255, 210, 90, 255};
