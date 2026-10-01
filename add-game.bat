@@ -8,7 +8,7 @@ if "%~1"=="" (
     pause
     exit /b 1
 )
-if "%PS5_HOST%"=="" set /p PS5_HOST=PS5 address, for example 192.168.1.222: 
-python "%~dp0scriptsdd_game.py" %*
+if "%PS5_HOST%"=="" set /p PS5_HOST=PS5 address, for example 192.168.1.222:
+python "%~dp0scripts\add_game.py" %*
 echo.
 pause
