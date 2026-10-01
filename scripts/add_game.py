@@ -10,10 +10,14 @@ connections (default 4); games are thousands of small files and every file costs
 round trips, so several connections make a big difference.
 
 You can also drag game folders onto add-game.bat.
+
+MV and MZ games keep their movies as .webm/.mp4, which the console cannot decode. When ffmpeg is on your PATH
+the movies are converted to .mpg first (next to the originals, see convert_video.py); use --no-convert to skip that.
 """
 import ftplib
 import os
 import queue
+import shutil
 import socket
 import sys
 import threading
@@ -167,7 +171,24 @@ def upload_worker(jobs, progress):
             pass
 
 
-def add_game(folder, jobs, remote_name=None):
+def prepare_movies(folder):
+    """Make the console-playable .mpg copies of a game's movies (needs ffmpeg), or say what to do."""
+    has_movies = any(f.lower().endswith(('.webm', '.mp4', '.ogv', '.m4v', '.mov')) and
+                     any(part.lower() in ('movies', 'movie') for part in os.path.relpath(root, folder).split(os.sep))
+                     for root, _d, files in os.walk(folder) for f in files)
+    if not has_movies:
+        return
+    if not shutil.which('ffmpeg'):
+        print('NOTE: this game has movies (.webm/.mp4). The console cannot decode those; with ffmpeg installed '
+              '(winget install Gyan.FFmpeg) they are converted automatically. Without it the movies are skipped in the game.')
+        return
+    print('Converting the movies for the console (the originals stay) ...', flush=True)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import convert_video
+    convert_video.convert_game(folder)
+
+
+def add_game(folder, jobs, remote_name=None, convert_movies=True):
     """Copy `folder` to REMOTE_ROOT/<remote_name or the folder's own name> on the console."""
     folder = os.path.abspath(folder)
     name = remote_name or os.path.basename(folder.rstrip('\\/'))
@@ -177,6 +198,9 @@ def add_game(folder, jobs, remote_name=None):
     if remote_name is None and not looks_like_game(folder):
         print(f'warning: {name} does not look like an RPG Maker game (no RPG_RT.ldb, Game.ini or Game.rgss*a '
               'next to each other), the launcher may not list it')
+
+    if convert_movies and remote_name is None:
+        prepare_movies(folder)
 
     by_dir = {}
     total_bytes = 0
@@ -263,6 +287,8 @@ def main():
     if args[:1] == ['-j'] and len(args) >= 2:
         jobs = max(1, int(args[1]))
         args = args[2:]
+    convert = '--no-convert' not in args
+    args = [a for a in args if a != '--no-convert']
     if not args:
         sys.exit(__doc__)
     try:
@@ -271,7 +297,7 @@ def main():
         sys.exit(f'Cannot reach the PS5 FTP server at {HOST}:{PORT} ({e}).\n'
                  'Run start-ps5.bat first (after jailbreaking the console).')
     for folder in args:
-        add_game(folder, jobs)
+        add_game(folder, jobs, convert_movies=convert)
 
 
 if __name__ == '__main__':
