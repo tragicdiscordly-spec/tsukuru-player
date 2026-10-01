@@ -51,6 +51,11 @@ yourself: see [docs/BUILDING.md](docs/BUILDING.md).
 <!-- screenshot: 04-install-page.png (the install page on a phone) -->
 <!-- screenshot: 05-installed-notification.png (the "installed" notification on the TV) -->
 
+> **What are the files in the folder?** `install.html` is the page you open in step 4; it starts `install.elf`, the installer.
+> An `.elf` is a program for the PS5 (like an `.exe` on Windows). You never open it yourself, and the PS5 does not run it just
+> because the stick is plugged in. `files` holds the programs that get copied to the console, `licenses` the license texts, and
+> `README.txt` the same steps as here.
+
 After the first install, **`tsukuru-installer`** also appears in your payload menu (if you use etaHEN's payload list). To
 update later, plug in the stick with the new bundle and start it from there: no phone needed.
 
