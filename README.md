@@ -1,171 +1,135 @@
 # Tsukuru Player
 
-RPG Maker games on a jailbroken PlayStation 5.
+**Play your RPG Maker games on a jailbroken PlayStation 5.**
 
-Play **RPG Maker 2000, 2003, XP, VX, VX Ace, MV and MZ** games on a **jailbroken PlayStation 5**:
+<!-- screenshot: 01-launcher-list.png (the game list) -->
+<!-- screenshot: 02-game-running.png (a game running on the TV) -->
 
-* **RPG Maker 2000 / 2003** games run on [EasyRPG Player](https://easyrpg.org).
-* **RPG Maker XP / VX / VX Ace** games run on [mkxp-z](https://gitlab.com/mkxp-z/mkxp-z) (real Ruby,
-  software OpenGL).
-* **RPG Maker MV / MZ** games run on the Outsider runtime (QuickJS, SoLoud and a software OpenGL renderer; the game's own
-  scripts and plugins run unchanged).
-* A small **launcher** app lists your games (from the console or a USB stick), picks the right engine
-  and starts it. One home screen tile: **Tsukuru Player**.
+Tsukuru Player is a small game launcher plus the engines that run RPG Maker games: **2000, 2003, XP, VX, VX Ace, MV and
+MZ**. You copy your own games to a USB stick (or to the console), open the **Tsukuru Player** tile on the home screen, pick
+a game and press Cross.
 
-Both engines are built with the open source [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk)
-and run as homebrew. Everything here is built from source.
+It does **not** contain any games, and it does not jailbreak your console. You need a PS5 that is already jailbroken.
 
-> **Status:** working, tested on firmware **13.60** with a test suite, a large translated 2000/2003
-> game, a VX Ace game with an encrypted archive and heavy scripts (runs at full speed), and an MV and an MZ game.
-> MV/MZ games depend on their plugins and run slower than the older engines: heavy scenes (many light sources, lots of
-> plugin scripting) can drop below 30 frames per second. Touchpad = mouse, and the launcher's **Settings** screen (Options
-> button) maps pad buttons to game buttons and to keyboard keys.
+---
 
-This repository contains **only** build recipes, patches, a launcher and helper scripts. It contains
-no exploit code, no keys, no Sony files, no games, and none of RPG Maker's RTP.
+## What you need
 
-## Using it
+- A **jailbroken PS5** (tested on firmware **13.60**), with the ELF loader running (port 9021).
+- The **web launcher** and **FTP server** payloads (`websrv`, `ftpsrv`) started on the console. Most payload menus have them.
+- A **USB stick** (exFAT or FAT32) with some free space.
+- The **Tsukuru Player bundle**: a folder called `tsukuru-player` (see *Get the bundle* below).
+- **Your own RPG Maker games.**
+- A **phone or PC on the same network** as the console, for the first install only.
 
-You need a console you have already jailbroken (an ELF loader must listen on port 9021), the
-programs built from this repository, and the games you own.
+## Get the bundle
 
-### Installing without a PC
+Download the latest `tsukuru-player` bundle from the project's *Releases* page and unzip it. If there is no release yet, build it
+yourself: see [docs/BUILDING.md](docs/BUILDING.md).
 
-`scripts/make-usb-bundle.sh` builds a folder, `tsukuru-player`, that installs everything from a USB stick: copy it to the
-stick, open its `install.html` from a phone on the same network (`http://<console address>:8080/fs/mnt/usb0/tsukuru-player/install.html`)
-and tap Install. `installer/README-usb.txt` (copied into the folder) has the steps.
+## Install (about 5 minutes)
 
-### Every time you want to play
+<!-- screenshot: 03-usb-folder.png (the tsukuru-player folder on the stick) -->
+1. **Copy the `tsukuru-player` folder** to the top level of your USB stick. Plug the stick into the PS5.
+2. **Jailbreak the console** and start **websrv** from your payload menu.
+3. **Find the console's address:** *Settings > Network > View Connection Status > IP Address* (for example `192.168.1.222`).
+4. **On your phone or PC**, open this address in a browser (use *your* console's address):
 
-1. Jailbreak the console (your exploit of choice).
-2. Start the two helper servers on the console: the web launcher (websrv) and an FTP server (ftpsrv).
-   * From a PC: run **`start-ps5.bat`** (or `python scripts/start_ps5.py`).
-   * Or without a PC: put `websrv-ps5.elf` and `ftpsrv-ps5.elf` in `/data/etaHEN/payloads/` and turn on
-     auto start for them in etaHEN's payload menu.
-3. Select the **Tsukuru Player** tile on the home screen (a page opens for a moment, then the launcher). Move
-   with the D-pad or left stick, press **Cross** to play, **Triangle** to rescan, **Square** to delete a game
-   stored on the console (press it twice; games on a USB stick are never deleted), **L1/R1** to page.
+   `http://192.168.1.222:8080/fs/mnt/usb0/tsukuru-player/install.html`
 
-> The FTP server and web launcher have no password and give full access to the console's files while
-> they run. Only use this on a network you trust. They stop when the console restarts.
+   If the page says "not found", the stick is not `usb0`: try `usb1`, `usb2`, and so on.
+5. **Tap Install.** Notifications in the corner of the TV show the progress (a minute or two). When it says
+   *"Tsukuru Player installed"*, open the **Tsukuru Player** tile on the home screen.
 
-### Adding games
+<!-- screenshot: 04-install-page.png (the install page on a phone) -->
+<!-- screenshot: 05-installed-notification.png (the "installed" notification on the TV) -->
 
-* **From a PC:** drag a game folder onto **`add-game.bat`** (or `python scripts/add_game.py "C:\path\Game"`).
-  It copies the game to `/data/games` over FTP, fast, and tells you if the game needs an RTP.
-* **From a USB stick** (exFAT): put your game folders in a folder called `games` on the stick and plug it
-  in before starting the launcher. Games wrapped in an extra folder are found too.
+After the first install, **`tsukuru-installer`** also appears in your payload menu (if you use etaHEN's payload list). To
+update later, plug in the stick with the new bundle and start it from there: no phone needed.
 
-The launcher works out the RPG Maker version from the game's files. Saves are written into the game's
-own folder.
+## Add your games
 
-### Games that do not work
+Pick one:
 
-Not every game runs. If a game closes right after it starts, the launcher says why the next time you open it
-(the last error the game printed). Typical reasons:
+- **USB stick (easiest):** make a folder called `games` on the stick and put each game in its own folder inside it.
+  Plug the stick in before you open Tsukuru Player.
+- **From a PC:** start `ftpsrv` on the console, then drag a game folder onto **`add-game.bat`** (it asks for the console's
+  address). The game is copied to the console's own storage.
+- **From a phone:** start `ftpsrv`, then use any FTP app: host = the console's address, port **2121**, no user name or
+  password. Copy the game folders to `/data/games`.
 
-* **XP/VX/Ace games that call Windows DLLs** (`Win32API`, for Steam, window tricks, key state, ...). A stand-in
-  class answers every call with 0, which is enough for many games (for example Steam achievements), but a game that
-  really needs the DLL (Pokemon Uranium, for example) will not work.
-* **MV/MZ games that use their own file protection** (hashed file names, a modified player) cannot be read; the
-  project does not try to get around that.
-* **MV/MZ plugins that need Node.js features beyond the common ones.** The runtime provides what plugins usually use
-  (`Buffer`, files, paths, `os`, `events`, `util`, `zlib` with the game's pako, the game's own CommonJS files, `nw`);
-  running other programs, networking and Steam are not available, and plugins that need them lose that feature.
+<!-- screenshot: 06-games-folder.png (the games folder on the stick) -->
 
-### RTP (RPG Maker's shared default graphics and sounds)
+## Play
 
-Many games do not include everything and need the **RTP** of the RPG Maker they were made with. The
-launcher marks such a game with a red **`!`** and says which RTP it needs.
+Open the **Tsukuru Player** tile, move with the D-pad or left stick, and press **Cross** to start.
 
-| Made with | RTP name | Folder on the console |
-| --- | --- | --- |
-| RPG Maker 2000 | `2000` | `/data/rtp/2000` |
-| RPG Maker 2003 | `2003` | `/data/rtp/2003` |
-| RPG Maker XP | `Standard` | `/data/rtp/Standard` |
-| RPG Maker VX | `RPGVX` | `/data/rtp/RPGVX` |
-| RPG Maker VX Ace | `RPGVXAce` | `/data/rtp/RPGVXAce` |
-
-Download and install the RTP you need from
-[RPG Maker's website](https://www.rpgmakerweb.com/run-time-package) on a Windows PC (free, from
-Kadokawa; you do **not** need the RPG Maker editor), then run **`python scripts/add_rtp.py`**: it finds
-the installed RTPs and copies them to the console. (`add_rtp.py NAME FOLDER` copies a folder by hand;
-a `rtp` folder on a USB stick works too.) The RTP is Kadokawa's property and is not part of this project.
-
-### Music
-
-* **MIDI** in XP/VX/VX Ace games needs a **SoundFont** (`.sf2`). Any General MIDI SoundFont works; a good
-  free one is [GeneralUser GS](https://github.com/mrbumpy409/GeneralUser-GS) (about 30 MB). Copy it with
-  `python scripts/add_soundfont.py GeneralUser-GS.sf2` (it goes to `/data/soundfonts`; a `soundfonts` folder
-  on a USB stick works too). RPG Maker 2000/2003 games do not need one, EasyRPG has its own MIDI synthesizer.
-* mkxp-z cannot play **.wma** files (some VX Ace games use them). Convert them with
-  `python scripts/convert_audio.py "C:\path\Game"` (needs ffmpeg): it writes an `.ogg` next to each `.wma`.
-* OGG, MP3 and WAV work everywhere.
-
-## What is in here
-
-| Path | What |
+| Button | What it does |
 | --- | --- |
-| `launcher/` | The launcher app (SDL2, C) |
-| `patches/` | Patches for EasyRPG Player and mkxp-z (PS5 platform support, RTP, fullscreen, ...) |
-| `packages/` | Build recipes (`PKGBUILD`, [pacbrew](https://github.com/ps5-payload-dev/pacbrew-repo) style) for libraries that pacbrew does not have, a patched SDL2, and a small FluidSynth-compatible MIDI synthesizer built on [TinySoundFont](https://github.com/schellingb/TinySoundFont) |
-| `shim/` | `ps5path.c`: makes relative file paths work (firmware 13.60 rejects them for launched apps) |
-| `tile/` | Installer for the home screen tile |
-| `installer/` | The USB installer (copies the programs to the console, installs the tile) and its install page |
-| `LEGAL.md`, `THIRD-PARTY-NOTICES.md` | What the project is and is not, and the licenses of everything in it |
-| `scripts/` | Build scripts (Linux/WSL) and the PC helpers above |
-| `tests/` | Small programs used to bring the port up (SDL, OpenGL, Ruby, paths, ...) |
+| Cross | Start the selected game |
+| Triangle | Look for games again |
+| Square | Delete the selected game (only games stored on the console; press twice) |
+| L1 / R1 | Page up / down |
+| Options | Settings: map pad buttons to game buttons and keyboard keys, picture scaling, pointer speed |
 
-## Building
+Inside games, the touchpad is the mouse. A red **`!`** next to a game means the launcher has something to tell you about it:
+select it and read the message at the bottom (a missing RTP, or files it cannot read).
 
-You need Linux (Ubuntu 24.04+ or WSL2), the [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk)
-release in `/opt/ps5-payload-sdk`, and [pacbrew-repo](https://github.com/ps5-payload-dev/pacbrew-repo)
-cloned to `~/pacbrew-repo`. In order:
+<!-- screenshot: 07-settings.png (the Settings screen) -->
 
-```sh
-# 1. libraries (pacbrew recipes and ours, see packages/)
-scripts/build-libs.sh zlib fmt libpng expat libiconv bzip2 freetype harfbuzz libsamplerate \
-    libogg libvorbis opus mpg123 flac libsndfile SDL2 SDL2_mixer SDL2_image SDL2_ttf libtheora \
-    openal libjpeg-turbo libwebp openlibm llvm mesa
-scripts/build-libs.sh pixman inih icu liblcf physfs sdl_sound uchardet fluidsynth-tsf
+## Which games work
 
-# 2. engines
-scripts/build-player.sh ~/easyrpg/Player       # EasyRPG Player (clone EasyRPG/Player and EasyRPG/liblcf first)
-scripts/build-ruby.sh                          # MRI Ruby 3.1 (needs a native Ruby 3.1 of the same version)
-scripts/build-mkxp.sh ~/easyrpg/mkxp-z         # mkxp-z (clone mkxp-z from GitLab first)
+| Game made with | Runs on | How well |
+| --- | --- | --- |
+| RPG Maker 2000 / 2003 | EasyRPG Player | Good |
+| RPG Maker XP / VX / VX Ace | mkxp-z | Good. A game that needs real Windows DLLs does not work. |
+| RPG Maker MV / MZ | The Outsider runtime | Good for most games. Heavy scenes can drop below 30 frames per second. |
 
-# 3. launcher and tile
-make -C launcher && make -C tile
-```
+Only a handful of games have been tested so far, so some will not work. **Games that need Steam or other Windows-only
+programs, that use their own file protection, or that call the internet may not run.** If a game closes by itself, open
+Tsukuru Player again: the bottom of the screen shows the last error the game printed. Please include it when you report a problem.
 
-On the console the programs go to `/data/homebrew/easyrpg`, `/data/homebrew/mkxp-z` and
-`/data/homebrew/rpgmaker` (as `eboot.elf`), and `libOSMesa.so.8` (software OpenGL, built by the `mesa`
-package) goes to `/user/homebrew/lib`. The launcher also needs a font at
-`/data/homebrew/rpgmaker/font.ttf` (mkxp-z's `wqymicrohei.ttf` works, it covers Japanese and Chinese).
-`scripts/ps5.py` uploads and starts things over FTP and the web launcher.
+Tested so far (not a promise for other games): a large translated 2000/2003 game, two large VX Ace games, a large XP fan game,
+an MZ game, and a few MV games.
 
-Some downloads are blocked on certain networks (`ftp.gnu.org`, for example); the recipes check
-checksums, so you can fetch the same file from a mirror and put it next to the recipe.
+## If something goes wrong
 
-## Credits and licenses
+| Problem | What to try |
+| --- | --- |
+| The page `install.html` is "not found" | The stick is not `usb0`: try `usb1` or `usb2`. Make sure websrv is running and the stick is plugged in. |
+| "Cannot reach the web launcher" | Start **websrv** (and **ftpsrv** for FTP) again. They stop whenever the console restarts, and you have to jailbreak again after every restart. |
+| The game list is empty | Check the folder is called `games` on the stick (or `/data/games` on the console), then press Triangle. |
+| A game shows a red `!` | Select it and read the message. Often it needs the **RTP**: see [docs/EXTRAS.md](docs/EXTRAS.md). |
+| A game starts, then the screen goes back to the home screen | Open Tsukuru Player again: the bottom line says why. |
+| Black screen | Wait about 30 seconds (big games load slowly), then check the message in the launcher. |
+| No music in an XP/VX/VX Ace game | MIDI needs a SoundFont: see [docs/EXTRAS.md](docs/EXTRAS.md). |
+| The console restarted | Jailbreak again and start websrv and ftpsrv again. Games and settings are kept. |
 
-* [Outsider](https://github.com/GeneralArcade/outsider) (MV/MZ runtime; used under its GPLv3+ option), QuickJS-NG (MIT),
-  SoLoud (zlib): see `THIRD-PARTY-NOTICES.md` for the complete list of components and their licenses
-* [EasyRPG Player](https://github.com/EasyRPG/Player) and liblcf: GPLv3 / MIT
-* [mkxp-z](https://gitlab.com/mkxp-z/mkxp-z) and mkxp: GPLv2 or later
-* [ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk), the PS5 SDL port, websrv, ftpsrv, pacbrew:
-  John Törnblom and contributors (GPLv3+ / zlib)
-* TinySoundFont: MIT; the MIDI SoundFont you choose has its own license (GeneralUser GS: free to use in software)
-* Ruby: Ruby / BSD-2-Clause; Mesa and LLVM: MIT / Apache 2.0 with LLVM exception; ICU: Unicode, Inc.;
-  SDL2, physfs, SDL_sound: zlib; inih: BSD-3-Clause; pixman: MIT
-* The launcher's font (mkxp-z's `wqymicrohei.ttf`): WenQuanYi Micro Hei
+## Good to know
 
-This project is licensed under the **GNU General Public License, version 3 or (at your option) any
-later version**; see `LICENSE`. RPG Maker and RTP are trademarks/property of Kadokawa Corporation; PlayStation and PS5 are
-trademarks of Sony Interactive Entertainment. This project is not affiliated with either company.
+- **Saves** are written into each game's own folder, so they stay with the game (on the stick, if the game is on the stick).
+- The **web launcher and FTP server have no password** while they run. Only use them on a network you trust.
+- Going online with a modified console can get it or your account banned. Keep it offline.
+- There is no uninstaller yet. To remove everything, delete the folders `/data/homebrew/rpgmaker`, `outsider`, `easyrpg`
+  and `mkxp-z`, and `/user/homebrew/lib/libOSMesa.so.8`, and remove the tile from the home screen.
 
 ## Legal
 
-The project contains no games, no RTP, no exploit code and no Sony files, and it is not meant for playing games you have no
-right to play. See `LEGAL.md` (intended use, piracy, the console, names) and `THIRD-PARTY-NOTICES.md`. If you hand the
-programs to someone, hand over or link to the source with them.
+This project contains no games, no RPG Maker runtime files (RTP), no exploit code and no Sony files. It is made for playing
+games you own or are licensed to play. Read [LEGAL.md](LEGAL.md) before sharing it. RPG Maker is a trademark of Kadokawa
+Corporation, and PlayStation and PS5 are trademarks of Sony Interactive Entertainment. This project is not affiliated with
+either company.
+
+## For developers
+
+- [docs/BUILDING.md](docs/BUILDING.md): what is in this repository, how to build everything, how the pieces fit together.
+- [docs/EXTRAS.md](docs/EXTRAS.md): RTP, SoundFonts, converting `.wma` music.
+- [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md): the screenshots the README is waiting for.
+
+## Credits and licenses
+
+Tsukuru Player is licensed under the **GNU General Public License, version 3 or later** (see `LICENSE`). It is built on
+[EasyRPG Player](https://github.com/EasyRPG/Player), [mkxp-z](https://gitlab.com/mkxp-z/mkxp-z), the
+[Outsider](https://github.com/GeneralArcade/outsider) runtime (QuickJS-NG, SoLoud), and the
+[ps5-payload-sdk](https://github.com/ps5-payload-dev/sdk) with its SDL port, websrv and ftpsrv, plus Ruby, Mesa, LLVM, SDL2
+and others. The complete list with licenses is in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

@@ -25,6 +25,9 @@ computer on the same Wi-Fi/network as the console. No PC is needed.
    for a moment and then the launcher starts). The same page updates an existing install. The launcher shows the
    console's address in the bottom right corner, so you can find it again.
 
+   After the first install, "tsukuru-installer" is also in the payload menu of etaHEN (if you use it). To update later,
+   plug in the stick with the new "tsukuru-player" folder and start it from there: no phone needed.
+
 Games
 -----
 Put your games in a folder called "games" on the USB stick (one folder per game) and plug the stick in before

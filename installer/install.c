@@ -345,6 +345,25 @@ is_dir(const char* path) {
 }
 
 
+/* Puts a copy of this installer into etaHEN's payload folder, so that it shows up in the payload menu as
+ * "tsukuru-installer": the next update is one click on the console, with the USB stick plugged in. */
+static void
+add_payload_entry(const char* bundle) {
+  const char* dir = "/data/etaHEN/payloads";
+  char from[700], to[700];
+  struct stat st;
+
+  if(!is_dir(dir)) {
+    return;
+  }
+  snprintf(from, sizeof(from), "%s/install.elf", bundle);
+  snprintf(to, sizeof(to), "%s/tsukuru-installer.elf", dir);
+  if(!stat(from, &st) && !copy_file(from, to, &st)) {
+    notify("Tsukuru Player installer: next time you can start \"tsukuru-installer\" from the payload menu");
+  }
+}
+
+
 int
 main(int argc, char *argv[]) {
   char bundle[512] = "", src[600], dst[600];
@@ -437,6 +456,8 @@ main(int argc, char *argv[]) {
     notify("Tsukuru Player installer: the files are copied, but the home screen tile could not be installed");
     return 1;
   }
+
+  add_payload_entry(bundle);
 
   notify("Tsukuru Player installed (%llu MB copied, %llu files were up to date). Open the Tsukuru Player tile on the home screen.",
 	 (unsigned long long)(bytes_copied >> 20), (unsigned long long)files_skipped);
