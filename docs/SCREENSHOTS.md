@@ -5,8 +5,9 @@ lines marked `<!-- screenshot: ... -->` can be switched on.
 
 | File | What it shows |
 | --- | --- |
-| `01-launcher-list.png` | The Tsukuru Player game list on the TV |
+| `01-launcher-list.png` | The Tsukuru Player game list on the TV **(done)** |
 | `02-game-running.png` | A game running (a free or original game; see below) |
+| `03a-connection-status.png` | Settings > Network > View Connection Status (shows the console's address) **(done)** |
 | `03-usb-folder.png` | The `tsukuru-player` folder on the USB stick (File Explorer) |
 | `04-install-page.png` | The install page on a phone, with the Install button |
 | `05-installed-notification.png` | The "Tsukuru Player installed" notification on the TV |
@@ -22,3 +23,9 @@ lines marked `<!-- screenshot: ... -->` can be switched on.
 - **Crop out personal information.** Remote Play, the PlayStation menus and phones can show your account name, friends,
   IP address, Wi-Fi name and notifications. Check every picture, including the corners.
 - **The launcher list** shows the names of the game folders on your stick. Use a clean test setup with only games you can show.
+
+## Still to do before the repository goes public
+
+- `01-launcher-list.png` has red bars over two games, but it still shows **"Pokemon Uranium 132"** and a game folder whose name
+  looks like a pirated copy (`The.Coffin.of.Andy.and.Leyley.Build...`). Cover those too, or take a new picture with only
+  games you can show.

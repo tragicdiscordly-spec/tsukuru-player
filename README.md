@@ -2,7 +2,7 @@
 
 **Play your RPG Maker games on a jailbroken PlayStation 5.**
 
-<!-- screenshot: 01-launcher-list.png (the game list) -->
+![The Tsukuru Player game list](docs/images/01-launcher-list.png)
 <!-- screenshot: 02-game-running.png (a game running on the TV) -->
 
 Tsukuru Player is a small game launcher plus the engines that run RPG Maker games: **2000, 2003, XP, VX, VX Ace, MV and
@@ -33,7 +33,10 @@ yourself: see [docs/BUILDING.md](docs/BUILDING.md).
 <!-- screenshot: 03-usb-folder.png (the tsukuru-player folder on the stick) -->
 1. **Copy the `tsukuru-player` folder** to the top level of your USB stick. Plug the stick into the PS5.
 2. **Jailbreak the console** and start **websrv** from your payload menu.
-3. **Find the console's address:** *Settings > Network > View Connection Status > IP Address* (for example `192.168.1.222`).
+3. **Find the console's address:** *Settings > Network > View Connection Status*. It is the **IPv4 address** (for example `192.168.1.222`).
+
+   ![Settings > Network > View Connection Status](docs/images/03a-connection-status.png)
+
 4. **On your phone or PC**, open this address in a browser (use *your* console's address):
 
    `http://192.168.1.222:8080/fs/mnt/usb0/tsukuru-player/install.html`
