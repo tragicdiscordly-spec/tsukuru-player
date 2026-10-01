@@ -23,9 +23,3 @@ lines marked `<!-- screenshot: ... -->` can be switched on.
 - **Crop out personal information.** Remote Play, the PlayStation menus and phones can show your account name, friends,
   IP address, Wi-Fi name and notifications. Check every picture, including the corners.
 - **The launcher list** shows the names of the game folders on your stick. Use a clean test setup with only games you can show.
-
-## Still to do before the repository goes public
-
-- `01-launcher-list.png` has red bars over two games, but it still shows **"Pokemon Uranium 132"** and a game folder whose name
-  looks like a pirated copy (`The.Coffin.of.Andy.and.Leyley.Build...`). Cover those too, or take a new picture with only
-  games you can show.

@@ -1,8 +1,9 @@
 # Third-party software
 
 This project ships programs that contain, or are built from, the software below. Each keeps its own license.
-This file is an inventory, kept by hand: **check it against the versions you actually build before a release**, and put
-the full license text of every component into the release (the "licenses" folder of the USB bundle).
+This file is an inventory, kept by hand: **check it against the versions you actually build before a release**. The full
+license text of every component is in [`licenses/third-party/`](licenses/third-party/INDEX.txt), and the USB bundle carries the
+same folder (`licenses/third-party`).
 
 The project's own code (launcher, installer, tile installer, path shim, build scripts, patches) is licensed under the
 **GNU General Public License, version 3 or (at your option) any later version** (`LICENSE`).

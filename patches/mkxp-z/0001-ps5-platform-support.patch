@@ -1,3 +1,179 @@
+diff --git a/binding/binding-mri.cpp b/binding/binding-mri.cpp
+index 59ceb2a..12acf7c 100644
+--- a/binding/binding-mri.cpp
++++ b/binding/binding-mri.cpp
+@@ -19,6 +19,9 @@
+  ** along with mkxp.  If not, see <http://www.gnu.org/licenses/>.
+  */
+ 
++#include <map>
++#include <regex>
++#include <string>
+ #include "audio/audio.h"
+ #include "filesystem/filesystem.h"
+ #include "display/graphics.h"
+@@ -151,6 +154,25 @@ RB_METHOD(mkxpStringToUTF8Bang);
+ VALUE json2rb(json5pp::value const &v);
+ json5pp::value rb2json(VALUE v);
+ 
++#ifdef __FreeBSD__
++/* RPG Maker XP ran Ruby 1.8, where text[5] is the number of the byte at 5; newer Ruby returns a one-letter string.
++ * XP games read their binary data that way, so for XP games String#[] with one integer returns the byte. Everything
++ * else goes to the original method. This is written in C on purpose: a Ruby method in between would keep the match
++ * data ($~) of text[/regexp/] to itself, while C frames let it reach the game's code. */
++static VALUE rgss1StrAref(int argc, VALUE *argv, VALUE self) {
++    if (argc == 1 && FIXNUM_P(argv[0])) {
++        long i = FIX2LONG(argv[0]);
++        long len = RSTRING_LEN(self);
++        if (i < 0)
++            i += len;
++        if (i < 0 || i >= len)
++            return Qnil;
++        return INT2FIX((unsigned char)RSTRING_PTR(self)[i]);
++    }
++    return rb_funcallv(self, rb_intern("__rgss_index"), argc, argv);
++}
++#endif
++
+ static void mriBindingInit() {
+     tableBindingInit();
+     etcBindingInit();
+@@ -183,6 +205,13 @@ static void mriBindingInit() {
+ #endif
+     
+     httpBindingInit();
++
++#ifdef __FreeBSD__
++    if (rgssVer == 1) {
++        rb_define_alias(rb_cString, "__rgss_index", "[]");
++        rb_define_method(rb_cString, "[]", RUBY_METHOD_FUNC(rgss1StrAref), -1);
++    }
++#endif
+     
+     if (rgssVer >= 3) {
+         _rb_define_module_function(rb_mKernel, "rgss_main", mriRgssMain);
+@@ -840,6 +869,97 @@ static void runCustomScript(const std::string &filename) {
+                newStringUTF8(filename.c_str(), filename.size()), NULL);
+ }
+ 
++#ifdef __FreeBSD__
++/* Scripts written for RPG Maker XP (Ruby 1.8) often have regular expressions made of raw bytes, such as
++ * FullWidthNumber = /(?:\xef\xbc[\x90-\x99])/ . Ruby 1.8 worked on bytes; newer Ruby refuses the literal as broken
++ * UTF-8 ("too short escaped multibyte character"). A script with such a line is run as a byte script (as in Ruby 1.8)
++ * by giving it a binary source encoding. */
++static std::string fixLegacyScript(const char *text, size_t len) {
++    static const std::regex literal(R"(^.*=\s*/.*\\x[89a-fA-F][0-9a-fA-F].*/\s*(#.*)?$)");
++    std::string src(text, len);
++    if (src.find("\\x") == std::string::npos)
++        return src;
++    size_t pos = 0;
++    while (pos < src.size()) {
++        size_t end = src.find('\n', pos);
++        std::string line = src.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
++        if (!line.empty() && line.back() == '\r')
++            line.pop_back();
++        if (line.find("\\x") != std::string::npos && std::regex_match(line, literal))
++            return "# coding: ascii-8bit\n" + src;
++        if (end == std::string::npos)
++            break;
++        pos = end + 1;
++    }
++    return src;
++}
++#endif
++
++#ifdef __FreeBSD__
++/* RPG Maker XP's Ruby accepts a later script that defines "class Foo < Bar" for a class that an earlier script already
++ * defined with another superclass (Pokemon Uranium does this for its bag window); newer Ruby raises "superclass
++ * mismatch". Such a later definition is turned into a plain "class Foo" (the class is reopened, it keeps its first
++ * superclass). Only top-level "class Name < Super" lines are looked at. */
++static std::string fixSuperclassMismatch(const std::string &src, std::map<std::string, std::string> &seen) {
++    static const std::regex classDef(R"(^class\s+([A-Z]\w*)\s*<\s*([A-Z][\w:]*)\s*(#.*)?$)");
++    if (src.find("class ") == std::string::npos)
++        return src;
++    std::string out;
++    out.reserve(src.size());
++    size_t pos = 0;
++    while (pos < src.size()) {
++        size_t end = src.find('\n', pos);
++        std::string line = src.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
++        bool cr = !line.empty() && line.back() == '\r';
++        if (cr)
++            line.pop_back();
++        if (line.compare(0, 6, "class ") == 0) {
++            std::smatch m;
++            if (std::regex_match(line, m, classDef)) {
++                std::string name = m[1].str(), super = m[2].str();
++                auto it = seen.find(name);
++                if (it == seen.end())
++                    seen[name] = super;
++                else if (it->second != super)
++                    line = "class " + name + (m[3].matched ? " " + m[3].str() : "");
++            }
++        }
++        out += line;
++        if (cr)
++            out += '\r';
++        if (end == std::string::npos)
++            break;
++        out += '\n';
++        pos = end + 1;
++    }
++    return out;
++}
++#endif
++
++#ifdef __FreeBSD__
++/* Community scripts that only exist to load native Windows DLLs (RGSS Linker, FmodEx audio). Without them the game
++ * uses the engine's own Audio. MKXP_SKIP_SCRIPTS=name:name adds more (script names, separated by ':'). */
++static bool shouldSkipScript(const char *name) {
++    static const char *const builtin[] = {"RGSS Linker", "F-mod main script"};
++    for (const char *b : builtin)
++        if (strcmp(name, b) == 0)
++            return true;
++    if (const char *env = getenv("MKXP_SKIP_SCRIPTS")) {
++        std::string list(env), wanted(name);
++        size_t start = 0;
++        while (start <= list.size()) {
++            size_t end = list.find(':', start);
++            if (end == std::string::npos)
++                end = list.size();
++            if (end > start && list.compare(start, end - start, wanted) == 0)
++                return true;
++            start = end + 1;
++        }
++    }
++    return false;
++}
++#endif
++
+ VALUE kernelLoadDataInt(const char *filename, bool rubyExc, bool raw);
+ 
+ struct BacktraceData {
+@@ -952,8 +1072,23 @@ static void runRMXPScripts(BacktraceData &btData) {
+         for (long i = 0; i < scriptCount; ++i) {
+             VALUE script = rb_ary_entry(scriptArray, i);
+             VALUE scriptDecoded = rb_ary_entry(script, 3);
++#ifdef __FreeBSD__
++            if (shouldSkipScript(RSTRING_PTR(rb_ary_entry(script, 1))))
++                continue;
++            std::string fixedScript = fixLegacyScript(RSTRING_PTR(scriptDecoded), RSTRING_LEN(scriptDecoded));
++            {
++                static std::map<std::string, std::string> seenSuperclasses;
++                fixedScript = fixSuperclassMismatch(fixedScript, seenSuperclasses);
++            }
++            /* RPG Maker XP scripts were written for Ruby 1.8, where a string is a row of bytes. Running them as
++             * byte scripts keeps their regular expressions and their text handling working. */
++            if (conf.rgssVersion == 1 && fixedScript.compare(0, 8, "# coding") != 0)
++                fixedScript = "# coding: ascii-8bit\n" + fixedScript;
++            VALUE string = newStringUTF8(fixedScript.c_str(), fixedScript.size());
++#else
+             VALUE string =
+             newStringUTF8(RSTRING_PTR(scriptDecoded), RSTRING_LEN(scriptDecoded));
++#endif
+             
+             VALUE fname;
+             const char *scriptName = RSTRING_PTR(rb_ary_entry(script, 1));
 diff --git a/src/audio/fluid-fun.cpp b/src/audio/fluid-fun.cpp
 index 3d89733..70ecab7 100644
 --- a/src/audio/fluid-fun.cpp

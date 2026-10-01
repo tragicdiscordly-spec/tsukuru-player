@@ -1,0 +1,37 @@
+SDL2 and single-header libraries
+================================
+
+SDL2 (Simple DirectMedia Layer, including the PS5 port used here): zlib license. The full text, with SDL's copyright line,
+is in SDL2_ttf/LICENSE.txt and SDL2_image/LICENSE.txt (identical terms for all SDL libraries).
+
+TinySoundFont (used as a small FluidSynth-compatible MIDI synthesizer): MIT license, Copyright (C) Bernhard Schelling. The
+license text from its header file:
+
+LICENSE (MIT)
+
+   Copyright (C) 2017-2025 Bernhard Schelling
+   Based on SFZero, Copyright (C) 2012 Steve Folta (https://github.com/stevefolta/SFZero)
+
+   Permission is hereby granted, free of charge, to any person obtaining a copy of this
+   software and associated documentation files (the "Software"), to deal in the Software
+   without restriction, including without limitation the rights to use, copy, modify, merge,
+   publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
+   to whom the Software is furnished to do so, subject to the following conditions:
+
+   The above copyright notice and this permission notice shall be included in all
+   copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+   INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+   PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+   LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+   TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+   USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+stb (stb_image, stb_truetype, stb_vorbis), dr_libs and pl_mpeg (inside Outsider and SoLoud): public domain / MIT-0 / MIT; the
+terms are at the end of each header file in the corresponding source tree.
+
+Apache License 2.0 (used by LLVM, and the WenQuanYi Micro Hei font): the full text is in LLVM/llvm__LICENSE.TXT (it is the
+Apache-2.0 text followed by the LLVM exception).
+
+WenQuanYi Micro Hei (the launcher font, taken from mkxp-z): Apache License 2.0 or GPL-3.0 with font exception.

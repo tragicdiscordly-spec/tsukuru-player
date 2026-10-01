@@ -1,0 +1,33 @@
+Outsider (RPG Maker MZ Native Runtime)
+Copyright (c) 2026 General Arcade (Pte. Ltd.)
+
+This software is dual-licensed. You may use it under either of the
+following licenses:
+
+1. GNU General Public License, version 3 or later (GPL-3.0-or-later)
+
+   Free for use, modification and redistribution under the terms of the
+   GPLv3, or any later version published by the Free Software Foundation.
+   Any work you distribute that is based on this software must be released
+   under the same terms, with its complete source code.
+   The full license text is in LICENSES/GPL-3.0.txt.
+
+2. Commercial license
+
+   For use in a commercial or proprietary project, or in any product
+   whose source code you do not wish to release under the GPL, you need
+   a commercial license from General Arcade (Pte. Ltd.). See
+   LICENSES/COMMERCIAL.md and write to contact@generalarcade.com to
+   request one.
+
+Every source file carries an SPDX identifier saying the same thing:
+
+    SPDX-License-Identifier: GPL-3.0-or-later OR LicenseRef-GeneralArcade-Commercial
+
+Third-party dependencies are fetched at build time and keep their own
+licenses, none of which is copyleft: SDL3 and SoLoud (zlib), QuickJS-NG
+(MIT), glslang (BSD-3-Clause and MIT), SDL_shadercross (zlib), SPIRV-Cross
+(Apache-2.0), stb (MIT / public domain), pl_mpeg (MIT) and, when enabled,
+Effekseer (MIT). Apache-2.0 is why this project is GPLv3 rather than
+GPLv2: the two are incompatible, and SPIRV-Cross is linked in whenever
+RMMZ_RUNTIME_SHADERS is enabled.

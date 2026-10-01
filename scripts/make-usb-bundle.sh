@@ -43,6 +43,8 @@ cp "$REPO/installer/install.html" "$OUT/install.html"
 cp "$REPO/installer/README-usb.txt" "$OUT/README.txt"
 mkdir -p "$OUT/licenses"
 cp "$REPO/LICENSE" "$REPO/LEGAL.md" "$REPO/THIRD-PARTY-NOTICES.md" "$OUT/licenses/"
+# the license texts of every third-party component (collected from their sources, see licenses/third-party/INDEX.txt)
+cp -r "$REPO/licenses/third-party" "$OUT/licenses/third-party"
 
 cp "$LAUNCHER" "$OUT/files/homebrew/rpgmaker/eboot.elf"
 cp "$FONT" "$OUT/files/homebrew/rpgmaker/font.ttf"

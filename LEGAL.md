@@ -26,8 +26,8 @@ The project is not made for, does not help with, and does not approve of copying
 so. A program that plays games cannot know whether someone has the right to play a particular one, and calling a tool
 "educational" does not change what the person using it does with it. People who use it are responsible for what they run,
 under the laws that apply to them. The maintainers do not host, link to or ask for games; requests for that will be ignored.
-If you are a rights holder and think something in this repository infringes your rights, open an issue or write to the
-contact address the repository publishes; it will be looked at promptly.
+If you are a rights holder and think something in this repository infringes your rights, open an issue in this repository
+(or use GitHub's own contact options on the owner's profile); it will be looked at promptly.
 
 ## The console
 
