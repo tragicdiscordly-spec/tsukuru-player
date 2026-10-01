@@ -8766,21 +8766,22 @@ index 0000000..3f451af
 +})();
 diff --git a/src/shims/picture_slots.js b/src/shims/picture_slots.js
 new file mode 100644
-index 0000000..dbc06c4
+index 0000000..7add6d0
 --- /dev/null
 +++ b/src/shims/picture_slots.js
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,123 @@
 +/*
 + * Idle picture slots cost nothing.
 + *
 + * RPG Maker creates one Sprite_Picture for every picture slot the game allows (Game_Screen.maxPictures(), 100 by
-+ * default) and updates all of them every frame. Some games raise the limit to 10000 with a plugin and use only a few
-+ * slots. A browser's compiled JavaScript copes with ten thousand idle sprites; this interpreter needs half a second
-+ * per frame for them (every plugin that wraps Sprite_Picture.update adds to it).
++ * default) and updates, transforms and draws all of them every frame; touch plugins loop over them as well. Some games
++ * raise the limit to 10000 with a plugin and use only a few slots. A browser's compiled JavaScript copes with ten
++ * thousand idle sprites; this interpreter needs half a second per frame for them.
 + *
-+ * The container of the picture sprites therefore only updates the sprites whose slot holds a picture, or that still
-+ * show something from a picture that was just erased (so it disappears). All sprites stay in place, in order and with
-+ * their usual index, so scripts that look a picture sprite up by number still work.
++ * With many slots the picture container only lists the sprites that have something to show (a picture in their slot, or
++ * a picture that was just erased and must still disappear). All sprites still exist, in order and with their
++ * usual index, in container._allPictureSprites. A game whose plugins look picture sprites up by index in
++ * container.children keeps the full list and only skips the updates of idle sprites.
 + *
 + * SPDX-License-Identifier: GPL-3.0-or-later
 + */
@@ -8790,24 +8791,106 @@ index 0000000..dbc06c4
 +    if (typeof Spriteset_Base === "undefined" || typeof Sprite_Picture === "undefined" ||
 +        typeof Game_Screen === "undefined" || !Spriteset_Base.prototype.createPictures) return;
 +
-+    var MANY = 300;      /* up to this many slots the normal update is cheap enough and stays as it is */
++    var MANY = 300;      /* up to this many slots the normal code is cheap enough and stays as it is */
++
++    /* The container's children are normally all picture sprites. Plugins that index them by picture number
++       ("_pictureContainer.children[id]") need the full list. */
++    var indexesChildren = null;
++    function pluginsIndexChildren() {
++        if (indexesChildren !== null) return indexesChildren;
++        indexesChildren = false;
++        try {
++            if (typeof $plugins === "undefined" || typeof __native_io === "undefined") return false;
++            var pattern = /_pictureContainer\s*(?:\[[^\]]*\])?\s*\.\s*(?:children\s*\[|getChildAt)/;
++            for (var i = 0; i < $plugins.length; i++) {
++                var p = $plugins[i];
++                if (!p || !p.status) continue;
++                var text = __native_io.readFileSync("js/plugins/" + p.name + ".js");
++                if (typeof text === "string" && pattern.test(text)) { indexesChildren = true; break; }
++            }
++        } catch (e) { indexesChildren = true; }
++        return indexesChildren;
++    }
++
++    function slotOffset() {
++        return ($gameParty && $gameParty.inBattle()) ? $gameScreen.maxPictures() : 0;
++    }
 +
 +    var createPictures = Spriteset_Base.prototype.createPictures;
 +    Spriteset_Base.prototype.createPictures = function() {
 +        createPictures.apply(this, arguments);
 +        var container = this._pictureContainer;
 +        if (!container || !container.children || container.children.length <= MANY) return;
++        var all = container.children;
++
++        if (pluginsIndexChildren()) {
++            /* full list stays: only skip the updates of idle sprites */
++            container.update = function() {
++                var pics = $gameScreen._pictures, offset = slotOffset();
++                for (var i = 0, n = all.length; i < n; i++) {
++                    var sprite = all[i];
++                    if (pics[sprite._pictureId + offset] || sprite.bitmap || sprite._pictureName) {
++                        if (sprite.update) sprite.update();
++                    }
++                }
++            };
++            return;
++        }
++
++        container._allPictureSprites = all;
++        var lingering = [];            /* sprites that showed something last frame and may need one more update */
++        container.children = [];
 +        container.update = function() {
-+            var kids = this.children;
-+            var pics = $gameScreen._pictures;
-+            var offset = ($gameParty && $gameParty.inBattle()) ? $gameScreen.maxPictures() : 0;
-+            for (var i = 0, n = kids.length; i < n; i++) {
-+                var sprite = kids[i];
-+                if (pics[sprite._pictureId + offset] || sprite.bitmap || sprite._pictureName) {
-+                    if (sprite.update) sprite.update();
++            var pics = $gameScreen._pictures, offset = slotOffset();
++            var count = all.length;
++            var mark = this._pictureMark = (this._pictureMark || 0) + 1;
++            var active = [];
++            var keys = Object.keys(pics);
++            var i, sprite;
++            for (i = 0; i < keys.length; i++) {
++                var key = keys[i];
++                var id = (+key) - offset;
++                if (!(id >= 1 && id <= count) || key.indexOf(".") >= 0) continue;
++                sprite = all[id - 1];
++                if (sprite._pictureMark !== mark && (pics[key] || sprite.bitmap || sprite._pictureName)) {
++                    sprite._pictureMark = mark;
++                    active.push(sprite);
 +                }
 +            }
++            for (i = 0; i < lingering.length; i++) {
++                sprite = lingering[i];
++                if (sprite._pictureMark !== mark) {
++                    sprite._pictureMark = mark;
++                    active.push(sprite);
++                }
++            }
++            active.sort(function(a, b) { return a._pictureId - b._pictureId; });
++            /* children that are not picture sprites (added by plugins) stay, after the pictures */
++            var old = this.children;
++            for (i = 0; i < old.length; i++) {
++                if (!old[i]._isPicture) active.push(old[i]);
++            }
++            this.children = active;
++            lingering = [];
++            for (i = 0; i < active.length; i++) {
++                sprite = active[i];
++                if (sprite.update) sprite.update();
++                if (sprite._isPicture && (sprite.bitmap || sprite._pictureName)) lingering.push(sprite);
++            }
 +        };
++    };
++
++    /* Game_Screen.updatePictures walks all slots with forEach, which visits every empty index of a 10000-long array */
++    var updatePictures = Game_Screen.prototype.updatePictures;
++    Game_Screen.prototype.updatePictures = function() {
++        var pics = this._pictures;
++        if (!pics || pics.length <= MANY) return updatePictures.apply(this, arguments);
++        var keys = Object.keys(pics);
++        for (var i = 0; i < keys.length; i++) {
++            var key = keys[i];
++            var pic = pics[key];
++            if (pic && typeof pic.update === "function" && /^\d+$/.test(key)) pic.update();
++        }
 +    };
 +})();
 diff --git a/src/shims/pixi_shim.js b/src/shims/pixi_shim.js
