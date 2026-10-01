@@ -30,7 +30,7 @@ yourself: see [docs/BUILDING.md](docs/BUILDING.md).
 
 ## Install (about 5 minutes)
 
-<!-- screenshot: 03-usb-folder.png (the tsukuru-player folder on the stick) -->
+![The top of the USB stick: games, rtp and tsukuru-player](docs/images/03-usb-folder.png)
 1. **Copy the `tsukuru-player` folder** to the top level of your USB stick. Plug the stick into the PS5.
 2. **Jailbreak the console** and start **websrv** from your payload menu.
 3. **Find the console's address:** *Settings > Network > View Connection Status*. It is the **IPv4 address** (for example `192.168.1.222`).
@@ -58,6 +58,20 @@ yourself: see [docs/BUILDING.md](docs/BUILDING.md).
 
 After the first install, **`tsukuru-installer`** also appears in your payload menu (if you use etaHEN's payload list). To
 update later, plug in the stick with the new bundle and start it from there: no phone needed.
+
+### No USB stick? (needs a PC)
+
+You can copy the bundle to the console over FTP instead. FTP is **not** a web page: a browser cannot open port 2121, it
+needs an FTP program.
+
+1. Start **websrv** and **ftpsrv** on the console.
+2. On the PC, open File Explorer and type `ftp://192.168.1.222:2121/data` in the address bar (use *your* console's address),
+   or use an FTP program such as FileZilla or WinSCP (host = the console's address, port **2121**, no user name or password).
+3. Copy the whole **`tsukuru-player`** folder into `/data` on the console, so you get `/data/tsukuru-player`.
+4. In a browser open `http://192.168.1.222:8080/fs/data/tsukuru-player/install.html` and tap **Install**.
+
+The rest is the same as with a stick. You can delete `/data/tsukuru-player` afterwards. On a phone this is awkward (a
+folder with many files); a cheap USB stick is easier.
 
 ## Add your games
 

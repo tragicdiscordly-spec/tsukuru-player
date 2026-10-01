@@ -8,7 +8,7 @@ lines marked `<!-- screenshot: ... -->` can be switched on.
 | `01-launcher-list.png` | The Tsukuru Player game list on the TV **(done)** |
 | `02-game-running.png` | A game running (a free or original game; see below) |
 | `03a-connection-status.png` | Settings > Network > View Connection Status (shows the console's address) **(done)** |
-| `03-usb-folder.png` | The `tsukuru-player` folder on the USB stick (File Explorer) |
+| `03-usb-folder.png` | The `tsukuru-player` folder on the USB stick (File Explorer) | **(done)**
 | `04-install-page.png` | The install page on a phone, with the Install button |
 | `05-installed-notification.png` | The "Tsukuru Player installed" notification on the TV |
 | `06-games-folder.png` | The `games` folder on the stick with a game folder inside |
