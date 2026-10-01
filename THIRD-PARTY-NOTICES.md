@@ -28,6 +28,7 @@ The project's own code (launcher, installer, tile installer, path shim, build sc
 | QuickJS-NG v0.17 | MIT | Outsider |
 | SoLoud (core and WAV/OGG/MP3/FLAC parts only; includes stb_vorbis and dr_libs) | zlib (stb_vorbis and dr_libs: public domain/MIT-0) | Outsider |
 | stb (image loading, TrueType), pl_mpeg | MIT / public domain | Outsider |
+| libwebp 1.4.0 (decoding WebP pictures) | BSD-3-Clause | Outsider (licence text: licenses/third-party/libwebp) |
 | liblcf | MIT | EasyRPG Player |
 | ICU | Unicode License | EasyRPG Player |
 | Ruby 3.1 | Ruby License / BSD-2-Clause | mkxp-z |
