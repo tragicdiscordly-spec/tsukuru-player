@@ -71,7 +71,7 @@ typedef struct {
 	int protected_files;   /* MV/MZ: the game's files have scrambled names (its own file protection); it cannot be run */
 } Game;
 
-#define PROTECTED_TEXT "This game protects its files in its own way (their names are scrambled), so it cannot run here."
+#define PROTECTED_TEXT "This game's files have scrambled names (its own file protection). That is usually unreadable here. Press Cross again to try anyway."
 #define PROTECTED_MESSAGE "! " PROTECTED_TEXT
 
 
@@ -508,9 +508,9 @@ static int start_game(const Game* g, int confirmed, char* message, size_t messag
 		return -1;
 	}
 
-	if (g->protected_files) {
+	if (g->protected_files && !confirmed) {
 		snprintf(message, message_size, "%s", PROTECTED_TEXT);
-		return -1;
+		return 1;
 	}
 
 	char path_esc[1200], args[1400], env[2600];

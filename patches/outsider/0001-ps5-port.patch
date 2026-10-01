@@ -949,6 +949,81 @@ index c817d04..2f262e3 100644
      JSValue global = JS_GetGlobalObject(ctx);
      JSValue img_obj = JS_NewObject(ctx);
  
+diff --git a/src/bindings/bind_io.c b/src/bindings/bind_io.c
+index 98a8f79..4f23062 100644
+--- a/src/bindings/bind_io.c
++++ b/src/bindings/bind_io.c
+@@ -5,6 +5,7 @@
+ 
+ #include "bindings/bind_io.h"
+ #include "io/file_io.h"
++#include "stb_image.h" /* its zlib decoder: Node's zlib.inflate* for plugins */
+ 
+ #include <quickjs.h>
+ #include <stdlib.h>
+@@ -257,6 +258,54 @@ static JSValue js_resolve_path(JSContext *ctx, JSValueConst this_val,
+     return JS_NewString(ctx, resolved);
+ }
+ 
++/* inflate(data, mode) -> ArrayBuffer. mode: 0 zlib, 1 raw deflate, 2 gzip, 3 zlib or gzip (by its header).
++   Used by the Node.js zlib shim (zlib.inflateSync, gunzipSync, ...). */
++static JSValue js_inflate(JSContext *ctx, JSValueConst this_val,
++                          int argc, JSValueConst *argv)
++{
++    (void)this_val;
++    if (argc < 1) return JS_ThrowTypeError(ctx, "inflate requires data");
++
++    size_t size = 0;
++    uint8_t *in = JS_GetArrayBuffer(ctx, &size, argv[0]);
++    if (!in) return JS_EXCEPTION;
++
++    int mode = 3;
++    if (argc > 1) JS_ToInt32(ctx, &mode, argv[1]);
++
++    const uint8_t *p = in;
++    size_t n = size;
++    int header = mode == 1 ? 0 : 1;
++
++    if (mode == 2 || (mode == 3 && n >= 2 && p[0] == 0x1f && p[1] == 0x8b)) {
++        if (n < 18 || p[0] != 0x1f || p[1] != 0x8b || p[2] != 8) {
++            return JS_ThrowInternalError(ctx, "incorrect header check");
++        }
++        size_t pos = 10;
++        int flg = p[3];
++        if (flg & 4) {
++            if (pos + 2 > n) return JS_ThrowInternalError(ctx, "unexpected end of file");
++            pos += 2 + (size_t)(p[pos] | (p[pos + 1] << 8));
++        }
++        if (flg & 8) { while (pos < n && p[pos]) pos++; pos++; }
++        if (flg & 16) { while (pos < n && p[pos]) pos++; pos++; }
++        if (flg & 2) pos += 2;
++        if (pos >= n) return JS_ThrowInternalError(ctx, "unexpected end of file");
++        p += pos;
++        n -= pos;
++        header = 0;
++    }
++
++    int outlen = 0;
++    char *dec = stbi_zlib_decode_malloc_guesssize_headerflag(
++        (const char *)p, (int)n, (int)(n * 4 + 64), &outlen, header);
++    if (!dec) return JS_ThrowInternalError(ctx, "incorrect header check");
++
++    JSValue result = JS_NewArrayBufferCopy(ctx, (const uint8_t *)dec, (size_t)outlen);
++    free(dec);
++    return result;
++}
++
+ /* Registration */
+ 
+ static const JSCFunctionListEntry js_io_funcs[] = {
+@@ -272,6 +321,7 @@ static const JSCFunctionListEntry js_io_funcs[] = {
+     JS_CFUNC_DEF("renameSync",      2, js_rename_sync),
+     JS_CFUNC_DEF("getGameRoot",     0, js_get_game_root),
+     JS_CFUNC_DEF("resolvePath",     1, js_resolve_path),
++    JS_CFUNC_DEF("inflate",         2, js_inflate),
+ };
+ 
+ void bind_io_register(JSContext *ctx)
 diff --git a/src/bindings/bind_platform.c b/src/bindings/bind_platform.c
 index e16475b..3808ff8 100644
 --- a/src/bindings/bind_platform.c
@@ -6408,10 +6483,10 @@ index 0000000..611fe2a
 +})();
 diff --git a/src/shims/node_shim.js b/src/shims/node_shim.js
 new file mode 100755
-index 0000000..26aa7fa
+index 0000000..70196be
 --- /dev/null
 +++ b/src/shims/node_shim.js
-@@ -0,0 +1,1234 @@
+@@ -0,0 +1,1308 @@
 +/* SPDX-License-Identifier: GPL-3.0-or-later */
 +/*
 + * Node.js pieces that RPG Maker MV/MZ games and their plugins use. On a PC those games run in NW.js, which has Node
@@ -7380,19 +7455,93 @@ index 0000000..26aa7fa
 +        constants: { signals: {}, errno: {} }
 +    };
 +
-+    /* ------------------------------------------------------------------ zlib (needs the game's pako) */
++    /* ------------------------------------------------------------------ zlib */
 +
-+    function zlibFn(pakoName) {
-+        return function(data, options) {
-+            if (!G.pako) throw new Error("zlib is not available (this game has no pako library)");
-+            var input = typeof data === "string" ? Buffer.from(data) : data;
-+            return Buffer.from(G.pako[pakoName](input, options));
++    /* Decompression is native (the engine's inflate). Compression writes valid but uncompressed ("stored") deflate
++       data, or uses the game's own pako when it ships one. */
++
++    var CRC_TABLE = null;
++    function crc32(b) {
++        if (!CRC_TABLE) {
++            CRC_TABLE = new Uint32Array(256);
++            for (var n = 0; n < 256; n++) {
++                var c = n;
++                for (var k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
++                CRC_TABLE[n] = c >>> 0;
++            }
++        }
++        var crc = 0xFFFFFFFF;
++        for (var i = 0; i < b.length; i++) crc = CRC_TABLE[(crc ^ b[i]) & 255] ^ (crc >>> 8);
++        return (crc ^ 0xFFFFFFFF) >>> 0;
++    }
++
++    function adler32(b) {
++        var a = 1, s = 0;
++        for (var i = 0; i < b.length; i++) {
++            a = (a + b[i]) % 65521;
++            s = (s + a) % 65521;
++        }
++        return ((s << 16) | a) >>> 0;
++    }
++
++    function storedBlocks(b) {
++        var parts = [], pos = 0;
++        do {
++            var len = Math.min(65535, b.length - pos), last = pos + len >= b.length ? 1 : 0;
++            var head = Buffer.from([last, len & 255, len >> 8, (~len) & 255, ((~len) >> 8) & 255]);
++            parts.push(head, b.subarray(pos, pos + len));
++            pos += len;
++        } while (pos < b.length);
++        return Buffer.concat(parts);
++    }
++
++    function u32(v, big) {
++        var b = Buffer.alloc(4);
++        if (big) b.writeUInt32BE(v >>> 0); else b.writeUInt32LE(v >>> 0);
++        return b;
++    }
++
++    function zlibError(e) {
++        var err = new Error(e && e.message ? e.message : "zlib error");
++        err.code = "Z_DATA_ERROR";
++        err.errno = -3;
++        return err;
++    }
++
++    function toBytes(data) {
++        if (typeof data === "string") return Buffer.from(data);
++        if (data instanceof ArrayBuffer) return Buffer.from(data);
++        return data;
++    }
++
++    function inflateWith(mode) {
++        return function(data) {
++            var bytes = toBytes(data);
++            try {
++                return Buffer.from(io.inflate(toArrayBuffer(bytes), mode));
++            } catch (e) {
++                throw zlibError(e);
++            }
 +        };
 +    }
++
++    function deflateWith(kind, pakoName) {
++        return function(data, options) {
++            if (G.pako && typeof G.pako[pakoName] === "function") return Buffer.from(G.pako[pakoName](toBytes(data), options));
++            var b = toBytes(data), body = storedBlocks(b);
++            if (kind === "raw") return body;
++            if (kind === "zlib") return Buffer.concat([Buffer.from([0x78, 0x01]), body, u32(adler32(b), true)]);
++            return Buffer.concat([Buffer.from([0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 3]), body, u32(crc32(b), false), u32(b.length, false)]);
++        };
++    }
++
 +    var zlib = {
-+        inflateSync: zlibFn("inflate"), deflateSync: zlibFn("deflate"),
-+        inflateRawSync: zlibFn("inflateRaw"), deflateRawSync: zlibFn("deflateRaw"),
-+        gunzipSync: zlibFn("ungzip"), gzipSync: zlibFn("gzip"), unzipSync: zlibFn("inflate")
++        inflateSync: inflateWith(0), inflateRawSync: inflateWith(1), gunzipSync: inflateWith(2), unzipSync: inflateWith(3),
++        deflateSync: deflateWith("zlib", "deflate"), deflateRawSync: deflateWith("raw", "deflateRaw"),
++        gzipSync: deflateWith("gzip", "gzip"),
++        crc32: function(data) { return crc32(toBytes(data)); },
++        constants: { Z_NO_COMPRESSION: 0, Z_BEST_SPEED: 1, Z_BEST_COMPRESSION: 9, Z_DEFAULT_COMPRESSION: -1,
++                     Z_OK: 0, Z_DATA_ERROR: -3, Z_SYNC_FLUSH: 2, Z_FINISH: 4 }
 +    };
 +    ["inflate", "deflate", "inflateRaw", "deflateRaw", "gunzip", "gzip", "unzip"].forEach(function(n) {
 +        var sync = zlib[n + "Sync"];
