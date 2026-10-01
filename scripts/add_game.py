@@ -11,8 +11,8 @@ round trips, so several connections make a big difference.
 
 You can also drag game folders onto add-game.bat.
 
-MV and MZ games keep their movies as .webm/.mp4, which the console cannot decode. When ffmpeg is on your PATH
-the movies are converted to .mpg first (next to the originals, see convert_video.py); use --no-convert to skip that.
+The console plays .webm movies itself but cannot decode .mp4. When a game has .mp4 movies and ffmpeg is on your PATH
+they are converted to .mpg first (next to the originals, see convert_video.py); use --no-convert to skip that.
 """
 import ftplib
 import os
@@ -173,14 +173,14 @@ def upload_worker(jobs, progress):
 
 def prepare_movies(folder):
     """Make the console-playable .mpg copies of a game's movies (needs ffmpeg), or say what to do."""
-    has_movies = any(f.lower().endswith(('.webm', '.mp4', '.ogv', '.m4v', '.mov')) and
+    has_movies = any(f.lower().endswith(('.mp4', '.m4v', '.mov')) and
                      any(part.lower() in ('movies', 'movie') for part in os.path.relpath(root, folder).split(os.sep))
                      for root, _d, files in os.walk(folder) for f in files)
     if not has_movies:
         return
     if not shutil.which('ffmpeg'):
-        print('NOTE: this game has movies (.webm/.mp4). The console cannot decode those; with ffmpeg installed '
-              '(winget install Gyan.FFmpeg) they are converted automatically. Without it the movies are skipped in the game.')
+        print('NOTE: this game has .mp4 movies. The console cannot decode those; with ffmpeg installed (winget install '
+              'Gyan.FFmpeg) they are converted automatically. Without it the movies are skipped in the game.')
         return
     print('Converting the movies for the console (the originals stay) ...', flush=True)
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

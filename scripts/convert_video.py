@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
-"""Convert the movies of an RPG Maker MV/MZ game to MPEG-1 (.mpg), next to the originals.
+"""Convert the .mp4 movies of an RPG Maker MV/MZ game to MPEG-1 (.mpg), next to the originals.
 
-  convert_video.py GAME_FOLDER [GAME_FOLDER ...]
+  convert_video.py [--all] GAME_FOLDER [GAME_FOLDER ...]
 
-RPG Maker MV and MZ games ship their movies as .webm (or .mp4). The PS5 player has no WebM decoder; it
-plays MPEG-1 (.mpg) movies, and looks for a .mpg with the same name next to the movie the game asks for
-(movies/Opening.webm -> movies/Opening.mpg). This tool makes those files with ffmpeg, which must be on
-your PATH (winget install Gyan.FFmpeg). The originals stay. Run it on the copy of the game on your PC,
-then copy the game to the console. Movies are scaled down to at most 960 pixels wide to keep playback smooth.
+The PS5 player plays WebM movies (VP8/VP9 with Opus or Vorbis sound, what RPG Maker's own export produces) by itself.
+It cannot decode MP4 (H.264): for those it looks for a .mpg (MPEG-1) with the same name next to the movie the game asks
+for (movies/Opening.mp4 -> movies/Opening.mpg). This tool makes those files with ffmpeg, which must be on your PATH
+(winget install Gyan.FFmpeg). The originals stay. Run it on the copy of the game on your PC, then copy the game to the
+console. With --all it converts the WebM movies as well (smaller picture, lighter on the console). Movies are scaled
+down to at most 960 pixels wide.
 """
 import os
 import shutil
 import subprocess
 import sys
 
-MOVIE_EXTENSIONS = ('.webm', '.mp4', '.ogv', '.m4v', '.mov')
+MOVIE_EXTENSIONS = ('.mp4', '.m4v', '.mov')           # what the console cannot decode itself
+ALL_EXTENSIONS = MOVIE_EXTENSIONS + ('.webm', '.ogv')
 MAX_WIDTH = 960
 
 
-def convert_game(folder):
+def convert_game(folder, extensions=MOVIE_EXTENSIONS):
     ffmpeg = shutil.which('ffmpeg')
     if not ffmpeg:
         sys.exit('ffmpeg was not found on your PATH. Install it (winget install Gyan.FFmpeg) and try again.')
@@ -29,7 +31,7 @@ def convert_game(folder):
             continue
         for name in files:
             base, ext = os.path.splitext(name)
-            if ext.lower() not in MOVIE_EXTENSIONS:
+            if ext.lower() not in extensions:
                 continue
             src = os.path.join(root, name)
             dst = os.path.join(root, base + '.mpg')
@@ -55,8 +57,13 @@ def convert_game(folder):
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         sys.exit(__doc__)
-    for game in sys.argv[1:]:
+    args = sys.argv[1:]
+    exts = MOVIE_EXTENSIONS
+    if '--all' in args:
+        exts = ALL_EXTENSIONS
+        args = [a for a in args if a != '--all']
+    for game in args:
         if os.path.isdir(game):
-            convert_game(game)
+            convert_game(game, exts)
         else:
             print(f'skipping {game}: not a folder')

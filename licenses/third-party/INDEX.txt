@@ -40,3 +40,4 @@ Ruby             (source checkout)                             COPYING, GPL, BSD
 SoLoud           (source checkout)                             LICENSE
 liblcf           (source checkout)                             COPYING
 mkxp-z           (source checkout)                             COPYING, steamshim/LICENSE.txt
+FFmpeg           ffmpeg-7.0.1.tar.xz                           COPYING.LGPLv2.1, LICENSE.md, CREDITS

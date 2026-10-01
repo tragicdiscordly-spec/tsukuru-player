@@ -35,17 +35,19 @@ also run `python scripts/add_rtp.py`: it finds the installed RTPs and copies the
 
 ## Movies (MV and MZ games)
 
-Games made with RPG Maker MV or MZ keep their cutscenes as **.webm** or **.mp4** files, which the console cannot decode.
-The player plays **.mpg** (MPEG-1) instead: it looks for a `.mpg` with the same name next to the movie the game asks for
-(`movies/Opening.webm` becomes `movies/Opening.mpg`). Make them on your PC (needs [ffmpeg](https://ffmpeg.org/); on Windows:
-`winget install Gyan.FFmpeg`):
+Cutscenes in RPG Maker MV and MZ games are **.webm** files (what the editor exports). The player decodes them itself, with sound,
+both as full-screen cutscenes and as pictures inside the game (animated title screens and the like). Nothing to do.
 
-- `add-game.bat` converts the movies by itself before it copies a game, when ffmpeg is installed (add `--no-convert` to
+Some games ship **.mp4** movies instead (H.264 video). The console cannot decode those. For them the player looks for a
+`.mpg` (MPEG-1) with the same name next to the movie (`movies/Opening.mp4` becomes `movies/Opening.mpg`). Make them on your PC
+(needs [ffmpeg](https://ffmpeg.org/); on Windows: `winget install Gyan.FFmpeg`):
+
+- `add-game.bat` converts them by itself before it copies a game, when ffmpeg is installed (add `--no-convert` to
   `python scripts/add_game.py` to skip that), or
-- drag the game folder onto `convert-videos.bat` (`python scripts/convert_video.py "C:\path\Game"`), then copy the game.
+- drag the game folder onto `convert-videos.bat` (`python scripts/convert_video.py "C:\path\Game"`; `--all` also converts the
+  WebM movies), then copy the game.
 
-The originals stay. Movies are scaled to at most 960 pixels wide so they play smoothly. Without the `.mpg` files a game still
-runs: its movies are skipped.
+The originals stay. Without the `.mpg` files a game still runs: those movies are skipped.
 
 ## Button mapping
 

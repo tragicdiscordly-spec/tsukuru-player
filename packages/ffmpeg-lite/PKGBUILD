@@ -1,0 +1,56 @@
+pkgname=ps5-payload-ffmpeg-lite
+pkgver=7.0.1
+pkgrel=1
+pkgdesc='FFmpeg libraries with only the royalty-free WebM decoders (VP8, VP9, Opus, Vorbis), used by the RPG Maker MV/MZ runtime to play movies'
+arch=('any')
+url='https://ffmpeg.org'
+license=('LGPL')
+options=(!strip libtool staticlibs)
+source=("https://ffmpeg.org/releases/ffmpeg-$pkgver.tar.xz")
+# checked against the FFmpeg release signing key (FCF9 86EA 15E6 E293 A564 4F10 B432 2F04 D676 58D8)
+sha256sums=('bce9eeb0f17ef8982390b1f37711a61b4290dc8c2a0c1a37b5857e85bfb0e4ff')
+groups=('ps5-payload-dev')
+depends=('ps5-payload-zlib')
+makedepends=('ps5-payload-sdk')
+
+prepare() {
+    if [ -z "${PS5_PAYLOAD_SDK}" ]; then
+	export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
+    fi
+}
+
+build() {
+    source "${PS5_PAYLOAD_SDK}/toolchain/prospero.sh"
+    cd ffmpeg-$pkgver
+
+    # LGPL build: no GPL parts, no external codec libraries, no programs, no network. Only what is needed to read a
+    # .webm file (Matroska) and decode its VP8/VP9 video and Opus/Vorbis sound; swscale turns the pictures into RGBA
+    # and swresample turns the sound into floats for the audio engine. H.264/AAC (.mp4) are left out on purpose.
+    ./configure \
+	--prefix="${PREFIX}" --enable-cross-compile \
+	--cross-prefix="${PS5_PAYLOAD_SDK}/bin/prospero-" \
+	--enable-static --disable-shared \
+	--arch=x86_64 --target-os=freebsd \
+	--disable-everything --disable-autodetect --disable-programs --disable-doc --disable-debug \
+	--disable-network --disable-avdevice --disable-avfilter --disable-postproc \
+	--enable-avcodec --enable-avformat --enable-avutil --enable-swscale --enable-swresample \
+	--enable-zlib \
+	--enable-decoder=vp8,vp9,opus,vorbis \
+	--enable-parser=vp8,vp9,opus,vorbis \
+	--enable-demuxer=matroska,ogg \
+	--enable-protocol=file \
+	--x86asmexe=nasm \
+	--cc="${CC}" --cxx="${CXX}" --nm="${NM}" --strip="${STRIP}" \
+	--ar="${AR}" --ranlib="${RANLIB}" --pkg-config="${PKG_CONFIG}"
+    ${MAKE}
+}
+
+package() {
+    source "${PS5_PAYLOAD_SDK}/toolchain/prospero.sh"
+    cd ffmpeg-$pkgver
+
+    export DESTDIR="${pkgdir}/${DESTDIR}"
+    ${MAKE} install
+
+    ${PS5_CROSS_FIX_ROOT} "${DESTDIR}/${PREFIX}"
+}

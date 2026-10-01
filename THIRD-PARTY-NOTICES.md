@@ -29,6 +29,7 @@ The project's own code (launcher, installer, tile installer, path shim, build sc
 | SoLoud (core and WAV/OGG/MP3/FLAC parts only; includes stb_vorbis and dr_libs) | zlib (stb_vorbis and dr_libs: public domain/MIT-0) | Outsider |
 | stb (image loading, TrueType), pl_mpeg | MIT / public domain | Outsider |
 | libwebp 1.4.0 (decoding WebP pictures) | BSD-3-Clause | Outsider (licence text: licenses/third-party/libwebp) |
+| FFmpeg 7.0.1 (libavformat, libavcodec, libavutil, libswscale, libswresample; LGPL-only build with just the VP8, VP9, Opus and Vorbis decoders and the Matroska/Ogg readers, to play WebM movies; recipe: packages/ffmpeg-lite) | LGPL-2.1-or-later | Outsider (licence texts: licenses/third-party/FFmpeg). It is linked statically; the complete source of this project is available, so it can be rebuilt with another FFmpeg |
 | liblcf | MIT | EasyRPG Player |
 | ICU | Unicode License | EasyRPG Player |
 | Ruby 3.1 | Ruby License / BSD-2-Clause | mkxp-z |
