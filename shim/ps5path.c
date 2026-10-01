@@ -415,3 +415,90 @@ int __wrap_utimes(const char* path, const struct timeval* times) {
 	ABS(path);
 	return __real_utimes(path, times);
 }
+
+/* --- time ---
+ * The console's localtime_r() / gmtime_r() fill in the date and time but leave tm_gmtoff and tm_zone (which the SDK's
+ * struct tm has, as on FreeBSD) holding whatever was in memory. Ruby reads tm_gmtoff for leap seconds and time zones,
+ * so Time#hour gave 25 or recursed until "stack level too deep". Fill them in: gmtime_r is computed here, and for
+ * localtime_r the offset is the difference between the local fields and UTC. */
+#include <time.h>
+
+static long long days_from_civil(long long y, int m, int d) {
+	y -= m <= 2;
+	long long era = (y >= 0 ? y : y - 399) / 400;
+	long long yoe = y - era * 400;
+	long long doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+	long long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+	return era * 146097 + doe - 719468;
+}
+
+static long long tm_to_seconds(const struct tm* tm) {
+	/* normalise the month first, as timegm does */
+	long long year = tm->tm_year + 1900LL, mon = tm->tm_mon;
+	year += mon / 12;
+	mon %= 12;
+	if (mon < 0) { mon += 12; year--; }
+	return days_from_civil(year, (int)mon + 1, 1) * 86400 + (tm->tm_mday - 1) * 86400LL + tm->tm_hour * 3600LL +
+	       tm->tm_min * 60LL + tm->tm_sec;
+}
+
+static void seconds_to_tm(long long s, struct tm* tm) {
+	long long days = s / 86400, rem = s % 86400;
+	if (rem < 0) { rem += 86400; days--; }
+	tm->tm_hour = (int)(rem / 3600);
+	tm->tm_min = (int)(rem % 3600 / 60);
+	tm->tm_sec = (int)(rem % 60);
+	tm->tm_wday = (int)(((days % 7) + 7 + 4) % 7); /* 1 January 1970 was a Thursday */
+	/* civil from days (Howard Hinnant's algorithm) */
+	long long z = days + 719468;
+	long long era = (z >= 0 ? z : z - 146096) / 146097;
+	long long doe = z - era * 146097;
+	long long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+	long long y = yoe + era * 400;
+	long long doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+	long long mp = (5 * doy + 2) / 153;
+	int d = (int)(doy - (153 * mp + 2) / 5 + 1);
+	int m = (int)(mp < 10 ? mp + 3 : mp - 9);
+	y += m <= 2;
+	tm->tm_year = (int)(y - 1900);
+	tm->tm_mon = m - 1;
+	tm->tm_mday = d;
+	tm->tm_yday = (int)(days - days_from_civil(y, 1, 1));
+	tm->tm_isdst = 0;
+	tm->tm_gmtoff = 0;
+	tm->tm_zone = (char*)"UTC";
+}
+
+struct tm* __wrap_gmtime_r(const time_t* t, struct tm* tm) {
+	if (!t || !tm) return NULL;
+	seconds_to_tm((long long)*t, tm);
+	return tm;
+}
+
+struct tm* __wrap_gmtime(const time_t* t) {
+	static __thread struct tm buf;
+	return __wrap_gmtime_r(t, &buf);
+}
+
+struct tm* __real_localtime_r(const time_t* t, struct tm* tm);
+struct tm* __wrap_localtime_r(const time_t* t, struct tm* tm) {
+	if (!t || !tm) return NULL;
+	struct tm* r = __real_localtime_r(t, tm);
+	if (!r) { /* no time zone information: use UTC */
+		seconds_to_tm((long long)*t, tm);
+		return tm;
+	}
+	long off = (long)(tm_to_seconds(r) - (long long)*t);
+	if (off > 18 * 3600 || off < -18 * 3600) { /* nonsense: use UTC */
+		seconds_to_tm((long long)*t, tm);
+		return tm;
+	}
+	r->tm_gmtoff = off;
+	r->tm_zone = (char*)(off ? "LOC" : "UTC");
+	return r;
+}
+
+struct tm* __wrap_localtime(const time_t* t) {
+	static __thread struct tm buf;
+	return __wrap_localtime_r(t, &buf);
+}

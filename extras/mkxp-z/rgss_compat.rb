@@ -4,6 +4,10 @@
 # scripts (the launcher sets MKXP_PRELOAD to this file).
 #
 # * Zlib is part of RPG Maker's Ruby; here it has to be loaded.
+# * TEMP, TMP, USERPROFILE and USERNAME are set, as on Windows.
+# * XP games: text[5] gives a byte number and String#each walks lines, as in Ruby 1.8.
+# * Message box texts also go to the game's output.
+# * dispose on an object whose engine part was never created is ignored, as RPG Maker did.
 # * Font.exist? says yes (fonts cannot be installed here).
 # * Thread.critical (Ruby 1.8) does nothing.
 # * Key state questions (GetAsyncKeyState) are answered from the console's keyboard and gamepad.
@@ -16,13 +20,88 @@ begin
 rescue LoadError
 end
 
+# Windows environment variables games use for scratch files and user names. TEMP points to a folder of its own.
+begin
+  home = ENV['HOME'] || '.'
+  temp = File.join(home, 'tmp')
+  Dir.mkdir(temp) unless File.directory?(temp)
+  ENV['TEMP'] ||= temp
+  ENV['TMP'] ||= temp
+  ENV['USERPROFILE'] ||= home
+  ENV['USERNAME'] ||= 'Player'
+rescue StandardError
+end
+
 # Games such as Pokemon Essentials replace the Input module with one that asks Windows which keys are down
 # (GetAsyncKeyState), so the gamepad would never reach them. The engine's own Input methods are kept under other
 # names here, before the game replaces them, and those key questions are answered from them (see Win32API below).
 module Input
   class << self
-    alias_method :__native_update, :update
-    alias_method :__native_press?, :press?
+    unless method_defined?(:__native_update) # this file can be loaded more than once (reset)
+      alias_method :__native_update, :update
+      alias_method :__native_press?, :press?
+    end
+  end
+end
+
+# RPG Maker XP ran Ruby 1.8, where text[5] is the number of the byte at 5 (newer Ruby gives a one-letter string) and
+# a string could be walked line by line with each. XP games read their binary data files that way, so XP games get
+# the old behaviour. (XP: no RGSS_VERSION constant and no RPG::BGM class.)
+if !defined?(RGSS_VERSION) && !(defined?(RPG) && RPG.const_defined?(:BGM))
+  # (text[5] giving the byte number is done inside the engine, see the mkxp-z patch)
+  class String
+    def each(*args, &block)
+      each_line(*args, &block)
+    end
+  end
+
+  # Ruby 1.8's Marshal.load read single bytes with getc; newer Ruby asks for getbyte. Pokemon Essentials' StringInput
+  # is an IO subclass with its own getc and read but no getbyte, so the inherited one fails ("uninitialized stream").
+  class IO
+    unless method_defined?(:__rgss_getbyte)
+      alias_method :__rgss_getbyte, :getbyte
+
+      def getbyte
+        __rgss_getbyte
+      rescue IOError
+        c = getc
+        c.is_a?(String) ? c.ord : c
+      end
+    end
+  end
+end
+
+# Message boxes (print / p, and msgbox in VX Ace) cannot be shown on the console; their text also goes to the game's
+# output, so the launcher can show it.
+module Kernel
+  [:print, :p, :msgbox, :msgbox_p].each do |name|
+    next unless private_method_defined?(name) || method_defined?(name) || respond_to?(name, true)
+    original = "__rgss_box_#{name}"
+    next if private_method_defined?(original) || method_defined?(original)
+    alias_method original, name rescue next
+    define_method(name) do |*args|
+      STDERR.puts "message box: " + args.map { |a| name.to_s.end_with?("p") ? a.inspect : a.to_s }.join(" ")
+      send(original, *args)
+    end
+    module_function name
+  end
+end
+
+# A game class built on Sprite / Plane / Window that never calls super in initialize (Pokemon Essentials' LargePlane)
+# has no engine object behind it. RPG Maker's player ignored dispose on such an object; mkxp-z raises "No instance
+# data for variable". Make dispose ignore it too.
+%w[Sprite Plane Window Viewport Tilemap Bitmap].each do |name|
+  next unless Object.const_defined?(name)
+  klass = Object.const_get(name)
+  next unless klass.method_defined?(:dispose) && !klass.method_defined?(:__rgss_dispose)
+  klass.class_eval do
+    alias_method :__rgss_dispose, :dispose
+
+    def dispose(*args)
+      __rgss_dispose(*args)
+    rescue Exception => e # mkxp-z's MKXPError is not a StandardError
+      raise unless e.message.include?("No instance data")
+    end
   end
 end
 
@@ -70,7 +149,22 @@ class Win32API
   }
   @@input_frame = -1
 
+  # GetClientRect / GetWindowRect: the rectangle of the game picture
+  def self.fill_rect(buffer)
+    return unless buffer.is_a?(String) && buffer.bytesize >= 16
+    w = (Graphics.width rescue 640)
+    h = (Graphics.height rescue 480)
+    buffer[0, 16] = [0, 0, w, h].pack('l4')
+  end
+
+  # Development aid: MKXP_DEBUG_KEYS=frame:vk,frame:vk (e.g. 600:0x43) holds that key for 6 frames from that frame.
+  DEBUG_KEYS = (ENV['MKXP_DEBUG_KEYS'] || '').split(',').map { |e| f, k = e.split(':'); [f.to_i, Integer(k)] }
+
   def self.key_down?(vk)
+    unless DEBUG_KEYS.empty?
+      n = Graphics.frame_count
+      return true if DEBUG_KEYS.any? { |f, k| k == vk && n >= f && n < f + 6 }
+    end
     button = VK_BUTTONS[vk]
     return false unless button
     frame = Graphics.frame_count
@@ -85,8 +179,13 @@ class Win32API
     case @func
     when /\AGet(Async)?KeyState/
       return Win32API.key_down?(args[0].to_i) ? 0x8000 : 0
-    when /\AGetForegroundWindow/, /\AGetWindowThreadProcessId/
-      return 1 # "this game's window is in front"
+    when /\AGetForegroundWindow/, /\AGetWindowThreadProcessId/, /\AFindWindow/, /\AGetActiveWindow/
+      return 1 # the game's one window (handle 1), in front
+    when /\AGetSystemMetrics/
+      return { 0 => 1920, 1 => 1080, 16 => 1920, 17 => 1080 }.fetch(args[0].to_i, 0) # screen size
+    when /\AGetClientRect/, /\AGetWindowRect/
+      Win32API.fill_rect(args[1])
+      return 1
     when /\AReg/
       return 2 # registry: "key not found" (ERROR_FILE_NOT_FOUND)
     end
@@ -110,7 +209,7 @@ end
 
 # Development aid: MKXP_DEBUG_SHOT=<file.png>,<frame> saves the picture at that frame and logs the frame count now and
 # then, which shows whether a game is drawing, waiting or stuck.
-if ENV['MKXP_DEBUG_SHOT']
+if ENV['MKXP_DEBUG_SHOT'] && !Graphics.respond_to?(:__shot_update)
   path, frame = ENV['MKXP_DEBUG_SHOT'].split(',')
   $__shot_path = path
   $__shot_frame = frame.to_i
@@ -121,7 +220,14 @@ if ENV['MKXP_DEBUG_SHOT']
       def update
         __shot_update
         n = Graphics.frame_count
-        STDERR.puts "frame #{n}" if n % 120 == 0
+        if n % 120 == 0
+          now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          fps = $__shot_time ? (120 / (now - $__shot_time)).round(1) : 0
+          $__shot_time = now
+          STDERR.puts "frame #{n} fps=#{fps} scene=#{$scene.class} size=#{Graphics.width}x#{Graphics.height}"
+          STDERR.puts "  at " + caller(1, 10).join("
+  at ") if n % 600 == 0
+        end
         if n == $__shot_frame
           begin
             Graphics.snap_to_bitmap.to_file($__shot_path)

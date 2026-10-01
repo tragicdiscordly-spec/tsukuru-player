@@ -88,7 +88,7 @@ index 39451b7..27cffc0 100644
      fillStringVec(opts["rubyLoadpath"], rubyLoadpaths);
      
 diff --git a/src/main.cpp b/src/main.cpp
-index bc50eab..9a3a09d 100644
+index bc50eab..88e896b 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
 @@ -25,6 +25,10 @@
@@ -131,6 +131,20 @@ index bc50eab..9a3a09d 100644
      char *tmp{};
      tmp = getenv("SRCDIR");
      if (tmp) {
+@@ -424,7 +441,13 @@ int main(int argc, char *argv[]) {
+ #endif
+ 
+     /* Start RGSS thread */
++#ifdef __FreeBSD__
++    /* The game's Ruby code runs on this thread. Threads on the PS5 get a small stack by default, and big games
++     * (Pokemon Essentials) run out of it ("stack level too deep", or a crash in C code). rgss thread stack: 64 MB. */
++    SDL_Thread *rgssThread = SDL_CreateThreadWithStackSize(rgssThreadFun, "rgss", 64 * 1024 * 1024, &rtData);
++#else
+     SDL_Thread *rgssThread = SDL_CreateThread(rgssThreadFun, "rgss", &rtData);
++#endif
+ 
+     /* Start event processing */
+     eventThread.process(rtData);
 diff --git a/src/system/system.h b/src/system/system.h
 index 9ad7eed..336c4b7 100644
 --- a/src/system/system.h
