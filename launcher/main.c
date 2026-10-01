@@ -734,6 +734,47 @@ static int key_index(int code) {
 	return 0;
 }
 
+/* What a pad button does, as one ready-made choice: the game button it presses, and the keyboard key (if any) that it
+ * presses as well. The list is in order of importance; the screen cycles through it. */
+typedef struct {
+	const char* name;
+	const char* hint;
+	int map; /* action as the game sees it; -1 nothing; -2 this button's own extra (for plugins) */
+	int key; /* DOM key code, 0 = none */
+} Role;
+static const Role roles[] = {
+	{"Confirm", "OK in menus and dialogs. Also presses the Z key.", ACT_CONFIRM, 90},
+	{"Cancel", "Go back / close a menu. Also presses the X key.", ACT_CANCEL, 88},
+	{"Dash", "Hold to run (Shift).", ACT_DASH, 0},
+	{"Menu", "Opens the game's menu.", ACT_MENU, 0},
+	{"Page up", "Previous tab or page (Q).", ACT_PAGEUP, 0},
+	{"Page down", "Next tab or page (W).", ACT_PAGEDOWN, 0},
+	{"Skip text", "Hold to skip messages (the Ctrl key), in games that support it.", -1, 17},
+	{"Auto mode", "Switches automatic message advance on and off, in games that have it (the A key).", -1, 65},
+	{"Hide the game's UI", "Hides the interface for a clean view, in games that have it (the Tab key).", -1, 9},
+	{"Enter key", "Presses Enter on the keyboard.", -1, 13},
+	{"Escape key", "Presses Escape on the keyboard.", -1, 27},
+	{"Space key", "Presses the space bar.", -1, 32},
+	{"Extra button", "A spare button that a few plugins read. Does nothing in most games.", -2, 0},
+	{"Nothing", "This button does nothing.", -1, 0},
+};
+enum { R_CONFIRM, R_CANCEL, R_DASH, R_MENU, R_PAGEUP, R_PAGEDOWN, R_SKIP, R_AUTO, R_HIDEUI, R_ENTER, R_ESC, R_SPACE,
+       R_EXTRA, R_NOTHING, ROLE_COUNT };
+
+/* The layout that comes already set up, per pad button (order of pad_buttons). */
+static const int recommended_role[] = {R_CONFIRM, R_CANCEL, R_DASH, R_MENU, R_PAGEUP, R_PAGEDOWN, R_AUTO, R_SKIP,
+                                       R_EXTRA, R_HIDEUI, R_EXTRA, R_EXTRA};
+/* The order the screen lists the buttons in: the ones every game uses first. */
+static const int ui_order[] = {0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 8, 9};
+
+static int role_available(int button, int role) {
+	return role != R_EXTRA || pad_buttons[button].def >= ACT_L2; /* only buttons that have a spare "extra" slot */
+}
+
+static int role_map(int button, int role) {
+	return roles[role].map == -2 ? pad_buttons[button].def : roles[role].map;
+}
+
 static const char* const scale_names[] = {"Automatic", "Sharp (blocky pixels)", "Smooth"};
 static const char* const pointer_names[] = {"Slow", "Normal", "Fast"};
 
@@ -747,8 +788,8 @@ static Settings settings;
 
 static void settings_defaults(Settings* st) {
 	for (int i = 0; i < PAD_BUTTONS; i++) {
-		st->map[i] = pad_buttons[i].def;
-		st->key[i] = i == 0 ? 90 : i == 1 ? 88 : 0; /* Cross also presses Z, Circle also presses X */
+		st->map[i] = role_map(i, recommended_role[i]);
+		st->key[i] = roles[recommended_role[i]].key;
 	}
 	st->scale = 0;
 	st->pointer = 1;
@@ -789,21 +830,31 @@ static void settings_save(void) {
 	fclose(f);
 }
 
-#define ROW_KEYS PAD_BUTTONS                    /* first row of the keyboard keys */
-#define ROW_SCALE (2 * PAD_BUTTONS)
-#define SETTINGS_ROWS (2 * PAD_BUTTONS + 3) /* buttons, keyboard keys, scaling, pointer speed, reset */
+#define ROW_SCALE PAD_BUTTONS
+#define SETTINGS_ROWS (PAD_BUTTONS + 3) /* the buttons, scaling, pointer speed, reset */
 
-/* Changes the value of a row by `dir` steps (usually +1/-1; keyboard keys also take bigger jumps). */
+/* Which role a pad button has now, or -1 when the saved values do not match one (older settings files). */
+static int role_of(int button) {
+	for (int r = 0; r < ROLE_COUNT; r++)
+		if (role_available(button, r) && settings.map[button] == role_map(button, r) && settings.key[button] == roles[r].key)
+			return r;
+	return -1;
+}
+
+static void role_cycle(int button, int dir) {
+	int cur = role_of(button), r = cur;
+	for (int n = 0; n < ROLE_COUNT; n++) {
+		r = r < 0 ? (dir > 0 ? 0 : ROLE_COUNT - 1) : ((r + (dir > 0 ? 1 : -1)) % ROLE_COUNT + ROLE_COUNT) % ROLE_COUNT;
+		if (role_available(button, r)) break;
+	}
+	settings.map[button] = role_map(button, r);
+	settings.key[button] = roles[r].key;
+}
+
+/* Changes the value of a row one step forwards (dir > 0) or backwards. */
 static void settings_change(int row, int dir) {
 	if (row < PAD_BUTTONS) {
-		int idx = settings.map[row] < 0 ? ACT_COUNT : settings.map[row];
-		idx = ((idx + dir) % (ACT_COUNT + 1) + ACT_COUNT + 1) % (ACT_COUNT + 1);
-		settings.map[row] = idx == ACT_COUNT ? -1 : idx;
-	} else if (row < ROW_SCALE) {
-		int b = row - ROW_KEYS;
-		int idx = key_index(settings.key[b]);
-		idx = ((idx + dir) % key_table_size + key_table_size) % key_table_size;
-		settings.key[b] = key_table[idx].code;
+		role_cycle(ui_order[row], dir);
 	} else if (row == ROW_SCALE) {
 		settings.scale = (settings.scale + (dir > 0 ? 1 : 2)) % 3;
 	} else if (row == ROW_SCALE + 1) {
@@ -938,52 +989,50 @@ static void draw_screen(int selected, int scroll, const char* message) {
 	SDL_RenderPresent(ren);
 }
 
-#define SETTINGS_TOP 165
-#define SETTINGS_ROW_H 54
-#define SETTINGS_VISIBLE 14
+#define SETTINGS_TOP 160
+#define SETTINGS_ROW_H 52
+#define SETTINGS_VISIBLE 15
 
 static void draw_settings(int row, int scroll, const char* message) {
-	static const SDL_Color white = {235, 238, 250, 255}, dim = {150, 160, 190, 255}, gold = {255, 210, 90, 255};
+	static const SDL_Color white = {245, 247, 255, 255}, soft = {205, 212, 235, 255}, gold = {255, 210, 90, 255};
 
 	fill(0, 0, SCREEN_W, SCREEN_H, 16, 20, 42);
 	fill(0, 0, SCREEN_W, 140, 26, 34, 74);
-	draw_text(font_big, "Settings", 90, 16, white);
-	draw_text(font_small, "For RPG Maker MV and MZ games. Other engines use their own keys.", 90, 100, dim);
+	draw_text(font_big, "Controls", 90, 14, white);
+	draw_text(font_small, "For RPG Maker MV and MZ games. Each button does one thing; the ones every game uses come first.", 90, 98, soft);
 
+	const char* hint = message;
 	for (int r = 0; r < SETTINGS_VISIBLE; r++) {
 		int i = scroll + r;
 		if (i >= SETTINGS_ROWS) break;
 		int y = SETTINGS_TOP + r * SETTINGS_ROW_H;
 		if (i == row) fill(60, y, SCREEN_W - 120, SETTINGS_ROW_H - 4, 52, 84, 196);
-		char label[96];
 		if (i < PAD_BUTTONS) {
-			snprintf(label, sizeof label, "%s   (game button)", pad_buttons[i].label);
-			draw_text(font_mid, label, 100, y + 4, white);
-			int act = settings.map[i];
-			draw_text(font_mid, action_names[act < 0 ? ACT_COUNT : act], 1150, y + 4, act != pad_buttons[i].def ? gold : white);
-		} else if (i < ROW_SCALE) {
-			int b = i - ROW_KEYS;
-			snprintf(label, sizeof label, "%s   (keyboard key)", pad_buttons[b].label);
-			draw_text(font_mid, label, 100, y + 4, white);
-			draw_text(font_mid, key_table[key_index(settings.key[b])].label, 1150, y + 4, settings.key[b] ? gold : dim);
+			int b = ui_order[i];
+			int role = role_of(b);
+			draw_text(font_mid, pad_buttons[b].label, 100, y + 2, white);
+			SDL_Color c = role == recommended_role[b] ? white : gold;
+			draw_text(font_mid, role >= 0 ? roles[role].name : "Custom (older setting)", 760, y + 2, c);
+			if (i == row) hint = role >= 0 ? roles[role].hint : "A mix from an older settings file. Press left or right to pick a ready-made choice.";
 		} else if (i == ROW_SCALE) {
-			draw_text(font_mid, "Picture scaling", 100, y + 4, white);
-			draw_text(font_mid, scale_names[settings.scale], 1150, y + 4, settings.scale ? gold : white);
+			draw_text(font_mid, "Picture scaling", 100, y + 2, white);
+			draw_text(font_mid, scale_names[settings.scale], 760, y + 2, settings.scale ? gold : white);
 		} else if (i == ROW_SCALE + 1) {
-			draw_text(font_mid, "Touchpad pointer speed", 100, y + 4, white);
-			draw_text(font_mid, pointer_names[settings.pointer], 1150, y + 4, settings.pointer != 1 ? gold : white);
+			draw_text(font_mid, "Touchpad pointer speed", 100, y + 2, white);
+			draw_text(font_mid, pointer_names[settings.pointer], 760, y + 2, settings.pointer != 1 ? gold : white);
 		} else {
-			draw_text(font_mid, "Reset everything to the defaults", 100, y + 4, dim);
+			draw_text(font_mid, "Back to the recommended layout", 100, y + 2, soft);
+			if (i == row) hint = "Sets every button above, the scaling and the pointer speed back to how they came.";
 		}
 	}
-	if (scroll > 0) draw_text(font_small, "\xE2\x96\xB2 more", SCREEN_W - 260, SETTINGS_TOP - 34, dim);
+	if (scroll > 0) draw_text(font_small, "\xE2\x96\xB2 more", SCREEN_W - 260, SETTINGS_TOP - 34, soft);
 	if (scroll + SETTINGS_VISIBLE < SETTINGS_ROWS)
-		draw_text(font_small, "\xE2\x96\xBC more", SCREEN_W - 260, SETTINGS_TOP + SETTINGS_VISIBLE * SETTINGS_ROW_H - 4, dim);
+		draw_text(font_small, "\xE2\x96\xBC more", SCREEN_W - 260, SETTINGS_TOP + SETTINGS_VISIBLE * SETTINGS_ROW_H - 4, soft);
 
 	fill(0, SCREEN_H - 110, SCREEN_W, 110, 26, 34, 74);
-	draw_text(font_small, "D-pad Up/Down: choose     Left/Right or \xE2\x9C\x95: change     L1/R1: change by 10     \xE2\x96\xB3  Defaults     \xE2\x97\x8B  Back",
-	          90, SCREEN_H - 92, dim);
-	if (message[0]) draw_text_fit(font_small, message, 90, SCREEN_H - 50, SCREEN_W - 180, gold);
+	draw_text(font_small, "D-pad up/down: choose     left/right or \xE2\x9C\x95: change     \xE2\x96\xB3  recommended layout     \xE2\x97\x8B  back",
+	          90, SCREEN_H - 98, white);
+	if (hint && hint[0]) draw_text_fit(font_small, hint, 90, SCREEN_H - 54, SCREEN_W - 180, gold);
 	maybe_shot();
 	SDL_RenderPresent(ren);
 }

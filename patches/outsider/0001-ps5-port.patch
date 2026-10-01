@@ -1474,7 +1474,7 @@ index 65adbdb..887922c 100644
      JSValue obj = JS_NewObject(ctx);
  
 diff --git a/src/bindings/bind_tilemap.c b/src/bindings/bind_tilemap.c
-index 63dcf4a..c74e881 100644
+index 63dcf4a..e035259 100644
 --- a/src/bindings/bind_tilemap.c
 +++ b/src/bindings/bind_tilemap.c
 @@ -3,6 +3,7 @@
@@ -1485,7 +1485,13 @@ index 63dcf4a..c74e881 100644
  #include "bindings/bind_tilemap.h"
  #include "rendering/tilemap.h"
  #include "rendering/renderer.h"
-@@ -18,6 +19,7 @@ extern Renderer *s_renderer;
+@@ -13,11 +14,12 @@
+ /* Global renderer, defined in bind_renderer.c; drawTiles uses its sprite batch. */
+ extern Renderer *s_renderer;
+ 
+-/* drawTiles(elementsF32, count, textureIds, texWidths, texHeights, numTilesets, offsetX, offsetY) */
++/* drawTiles(elementsF32, count, textureIds, texWidths, texHeights, numTilesets, offsetX, offsetY [, scaleX, scaleY]) */
+ 
  static JSValue js_tilemap_draw_tiles(JSContext *ctx, JSValueConst this_val,
                                       int argc, JSValueConst *argv)
  {
@@ -1493,6 +1499,32 @@ index 63dcf4a..c74e881 100644
      (void)this_val;
      if (argc < 8)
          return JS_ThrowTypeError(ctx, "drawTiles requires 8 arguments");
+@@ -79,6 +81,16 @@ static JSValue js_tilemap_draw_tiles(JSContext *ctx, JSValueConst this_val,
+         return JS_EXCEPTION;
+     }
+ 
++    /* optional args 8 and 9: scale of the layer's world transform (a zoomed map) */
++    double scale_x = 1.0, scale_y = 1.0;
++    if (argc >= 10) {
++        if (JS_ToFloat64(ctx, &scale_x, argv[8]) || JS_ToFloat64(ctx, &scale_y, argv[9])) {
++            if (tilesets != stack_ts) free(tilesets);
++            return JS_EXCEPTION;
++        }
++        if (!(scale_x > 0.0) || !(scale_y > 0.0)) { scale_x = 1.0; scale_y = 1.0; }
++    }
++
+     /* arg 0: elementsF32 (ArrayBuffer). Capture the backing pointer only after
+        every other argument is converted: those conversions can run user JS
+        (valueOf/getters/Proxy traps) that detaches or resizes this buffer. */
+@@ -98,7 +110,7 @@ static JSValue js_tilemap_draw_tiles(JSContext *ctx, JSValueConst this_val,
+     SpriteBatch *batch = renderer_get_batch(s_renderer);
+     if (batch) {
+         tilemap_draw_tiles(elements, count, tilesets, num_tilesets,
+-                           (float)offset_x, (float)offset_y, batch);
++                           (float)offset_x, (float)offset_y, (float)scale_x, (float)scale_y, batch);
+     }
+ 
+     if (tilesets != stack_ts) free(tilesets);
 diff --git a/src/bindings/bind_video.c b/src/bindings/bind_video.c
 index 71d45e6..6985f04 100644
 --- a/src/bindings/bind_video.c
@@ -2439,10 +2471,30 @@ index 0000000..9457b4a
 +
 +#endif /* RMMZ_JS_POOL_ALLOC_H */
 diff --git a/src/engine/script_loader.c b/src/engine/script_loader.c
-index 0b731d2..4ff3408 100644
+index 0b731d2..cc48a12 100644
 --- a/src/engine/script_loader.c
 +++ b/src/engine/script_loader.c
-@@ -254,6 +254,7 @@ static const char *SHIM_FILES[] = {
+@@ -20,6 +20,19 @@ static bool is_valid_plugin_name(const char *name)
+     return strstr(name, "..") == NULL;
+ }
+ 
++/* Plugins that are only a speed-up in a browser and need something this runtime does not have: AudioStreaming
++   decodes music with a WebAssembly build of stb_vorbis inside a Web Worker, so no song would ever play. Without it
++   the game loads its music the normal way, which works. */
++static bool is_skipped_plugin(const char *name)
++{
++    static const char *const skipped[] = { "AudioStreaming", NULL };
++    const char *base = strrchr(name, '/');
++    base = base ? base + 1 : name;
++    for (int i = 0; skipped[i]; i++)
++        if (strcmp(base, skipped[i]) == 0) return true;
++    return false;
++}
++
+ /* Join dir + file with exactly one separator. Returns a malloc'd string. */
+ static char *join_path(const char *dir, const char *file)
+ {
+@@ -254,6 +267,7 @@ static const char *SHIM_FILES[] = {
      "effekseer_shim.js",
      "dom_overlay.js",
      "plugin_compat.js",
@@ -2450,7 +2502,7 @@ index 0b731d2..4ff3408 100644
      NULL
  };
  
-@@ -288,10 +289,40 @@ static const char *RMMZ_CORE_SCRIPTS[] = {
+@@ -288,10 +302,40 @@ static const char *RMMZ_CORE_SCRIPTS[] = {
      NULL
  };
  
@@ -2491,7 +2543,7 @@ index 0b731d2..4ff3408 100644
      NULL
  };
  
-@@ -315,6 +346,44 @@ static const char *LIB_SCRIPTS[] = {
+@@ -315,6 +359,44 @@ static const char *LIB_SCRIPTS[] = {
      NULL
  };
  
@@ -2536,7 +2588,7 @@ index 0b731d2..4ff3408 100644
  bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *game_dir)
  {
      if (!engine || !shim_dir || !game_dir) return false;
-@@ -325,9 +394,24 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -325,9 +407,24 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
      }
      printf("script_loader: shims loaded\n");
  
@@ -2563,7 +2615,7 @@ index 0b731d2..4ff3408 100644
          if (!path) return false;
  
          if (file_io_exists(path)) {
-@@ -336,7 +420,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -336,7 +433,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
                  fprintf(stderr, "script_loader: warning: failed to load lib: %s\n", path);
              }
              js_engine_execute_pending_jobs(engine);
@@ -2572,7 +2624,7 @@ index 0b731d2..4ff3408 100644
          } else {
              fprintf(stderr, "script_loader: warning: lib not found: %s\n", path);
          }
-@@ -345,8 +429,8 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -345,8 +442,8 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
      printf("script_loader: libraries loaded\n");
  
      /* Step 3: Load RPG Maker MZ core scripts */
@@ -2583,7 +2635,7 @@ index 0b731d2..4ff3408 100644
          if (!path) return false;
  
          if (file_io_exists(path)) {
-@@ -354,10 +438,10 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -354,10 +451,10 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
              if (!ok) {
                  /* Non-fatal: core scripts may reference PIXI features the shim lacks. */
                  fprintf(stderr, "script_loader: note: errors during %s (may be expected for PIXI deps)\n",
@@ -2596,7 +2648,7 @@ index 0b731d2..4ff3408 100644
          } else {
              fprintf(stderr, "script_loader: warning: core script not found: %s\n", path);
          }
-@@ -365,6 +449,8 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -365,6 +462,8 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
      }
      printf("script_loader: core scripts loaded\n");
  
@@ -2605,7 +2657,18 @@ index 0b731d2..4ff3408 100644
      /* Step 4: Load enabled plugins */
      char *plugins_path = join_path(game_dir, "js/plugins.js");
      if (plugins_path && file_io_exists(plugins_path)) {
-@@ -447,7 +533,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -404,6 +503,10 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+                     fprintf(stderr, "Skipping plugin with invalid name: %s\n", pname);
+                     continue;
+                 }
++                if (is_skipped_plugin(pname)) {
++                    printf("script_loader: plugin %s not run (needs WebAssembly workers; normal audio is used)\n", pname);
++                    continue;
++                }
+ 
+                 char plugin_file[512];
+                 snprintf(plugin_file, sizeof(plugin_file),
+@@ -447,7 +550,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
                      /* Logged before eval so a native crash inside a plugin
                         leaves its name as the last line of the log. */
                      printf("script_loader: plugin %s\n", plugins->entries[i].name);
@@ -2614,7 +2677,7 @@ index 0b731d2..4ff3408 100644
                      if (!ok) {
                          fprintf(stderr, "script_loader: warning: plugin error: %s\n",
                                  plugins->entries[i].name);
-@@ -470,6 +556,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -470,6 +573,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
      /* Step 4b: Post-core shims go after plugins so they win over plugin
         patches to the same engine classes (e.g. Tilemap.Layer.prototype.render). */
      for (int i = 0; POST_CORE_SHIMS[i] != NULL; i++) {
@@ -2622,7 +2685,7 @@ index 0b731d2..4ff3408 100644
          char *path = join_path(shim_dir, POST_CORE_SHIMS[i]);
          if (!path) return false;
  
-@@ -480,14 +567,29 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -480,14 +584,29 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
          js_engine_execute_pending_jobs(engine);
          free(path);
      }
@@ -2654,7 +2717,7 @@ index 0b731d2..4ff3408 100644
          if (!ok) {
              fprintf(stderr, "script_loader: warning: errors during main.js\n");
          }
-@@ -497,6 +599,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -497,6 +616,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
          printf("script_loader: main.js loaded\n");
      }
      free(main_path);
@@ -4692,7 +4755,7 @@ index 0000000..7e5cb26
 + * Copyright (c) 2026 the PS5 port contributors */
 +#include <SDL2/SDL_opengl.h>
 diff --git a/src/rendering/canvas2d.c b/src/rendering/canvas2d.c
-index 9e47eca..abc3743 100644
+index 9e47eca..99c89a1 100644
 --- a/src/rendering/canvas2d.c
 +++ b/src/rendering/canvas2d.c
 @@ -80,20 +80,21 @@ typedef struct {
@@ -4725,7 +4788,144 @@ index 9e47eca..abc3743 100644
  }
  
  static FontEntry *find_font(const char *name)
-@@ -245,7 +246,9 @@ static void free_state(DrawState *s)
+@@ -114,6 +115,101 @@ static inline int clampi(int v, int lo, int hi)
+     return v;
+ }
+ 
++/* Operators whose result is "nothing" wherever the source is empty (spec: they clear the destination there, also
++   outside the drawn shape): copy, source-in, source-out, destination-in, destination-atop. */
++static inline int comp_clears_dst(int comp_op)
++{
++    return comp_op == CANVAS2D_COMP_COPY || comp_op == CANVAS2D_COMP_SOURCE_IN || comp_op == CANVAS2D_COMP_SOURCE_OUT ||
++           comp_op == CANVAS2D_COMP_DEST_IN || comp_op == CANVAS2D_COMP_DEST_ATOP;
++}
++
++/* Porter-Duff operators that depend on both alphas (straight-alpha pixels): result = source * Fa + dest * Fb. */
++static void blend_porter_duff(uint8_t *dst, uint8_t sr, uint8_t sg, uint8_t sb, int sa, int comp_op)
++{
++    int da = dst[3];
++    int fa, fb; /* 0..255 */
++    switch (comp_op) {
++    case CANVAS2D_COMP_SOURCE_ATOP: fa = da;       fb = 255 - sa; break;
++    case CANVAS2D_COMP_SOURCE_IN:   fa = da;       fb = 0;        break;
++    case CANVAS2D_COMP_SOURCE_OUT:  fa = 255 - da; fb = 0;        break;
++    case CANVAS2D_COMP_DEST_OVER:   fa = 255 - da; fb = 255;      break;
++    case CANVAS2D_COMP_DEST_IN:     fa = 0;        fb = sa;       break;
++    case CANVAS2D_COMP_DEST_OUT:    fa = 0;        fb = 255 - sa; break;
++    case CANVAS2D_COMP_DEST_ATOP:   fa = 255 - da; fb = sa;       break;
++    default:                        fa = 255 - da; fb = 255 - sa; break; /* xor */
++    }
++    int ws = sa * fa, wd = da * fb, tot = ws + wd;
++    int out_a = (tot + 127) / 255;
++    if (out_a <= 0) {
++        dst[0] = dst[1] = dst[2] = dst[3] = 0;
++        return;
++    }
++    dst[0] = (uint8_t)((sr * ws + dst[0] * wd + tot / 2) / tot);
++    dst[1] = (uint8_t)((sg * ws + dst[1] * wd + tot / 2) / tot);
++    dst[2] = (uint8_t)((sb * ws + dst[2] * wd + tot / 2) / tot);
++    dst[3] = (uint8_t)(out_a > 255 ? 255 : out_a);
++}
++
++static inline float blend_lum(const float *c) { return 0.3f * c[0] + 0.59f * c[1] + 0.11f * c[2]; }
++
++/* "difference" and "saturation" blend modes (W3C compositing: the blended colour replaces the source colour in
++   proportion to the backdrop alpha, then the usual source-over). */
++static void blend_special(uint8_t *dst, uint8_t sr, uint8_t sg, uint8_t sb, int sa, int comp_op)
++{
++    float as = sa / 255.0f, ab = dst[3] / 255.0f;
++    float cb[3] = { dst[0] / 255.0f, dst[1] / 255.0f, dst[2] / 255.0f };
++    float cs[3] = { sr / 255.0f, sg / 255.0f, sb / 255.0f };
++    float bl[3];
++    if (comp_op == CANVAS2D_COMP_DIFFERENCE) {
++        for (int i = 0; i < 3; i++) bl[i] = fabsf(cb[i] - cs[i]);
++    } else { /* saturation: backdrop hue and luminosity, source saturation */
++        float smax = fmaxf(cs[0], fmaxf(cs[1], cs[2])), smin = fminf(cs[0], fminf(cs[1], cs[2]));
++        float sat = smax - smin;
++        float bmax = fmaxf(cb[0], fmaxf(cb[1], cb[2])), bmin = fminf(cb[0], fminf(cb[1], cb[2]));
++        float t[3] = { 0.0f, 0.0f, 0.0f };
++        if (bmax > bmin)
++            for (int i = 0; i < 3; i++) t[i] = (cb[i] - bmin) * sat / (bmax - bmin);
++        float d = blend_lum(cb) - blend_lum(t);
++        for (int i = 0; i < 3; i++) bl[i] = t[i] + d;
++        float l = blend_lum(bl), n = fminf(bl[0], fminf(bl[1], bl[2])), x = fmaxf(bl[0], fmaxf(bl[1], bl[2]));
++        if (n < 0.0f)
++            for (int i = 0; i < 3; i++) bl[i] = l + (bl[i] - l) * l / (l - n);
++        if (x > 1.0f)
++            for (int i = 0; i < 3; i++) bl[i] = l + (bl[i] - l) * (1.0f - l) / (x - l);
++    }
++    float ao = as + ab - as * ab;
++    if (ao <= 0.0f) {
++        dst[0] = dst[1] = dst[2] = dst[3] = 0;
++        return;
++    }
++    for (int i = 0; i < 3; i++) {
++        float csp = (1.0f - ab) * cs[i] + ab * bl[i];
++        float co = (as * csp + (1.0f - as) * ab * cb[i]) / ao;
++        int v = (int)(co * 255.0f + 0.5f);
++        dst[i] = (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
++    }
++    dst[3] = (uint8_t)(int)(ao * 255.0f + 0.5f);
++}
++
++/* Clears everything outside the rectangle [x0,x1) x [y0,y1) (already clamped to the canvas). */
++static void clear_outside(Canvas2DCtx *ctx, int x0, int y0, int x1, int y1)
++{
++    int W = ctx->width, H = ctx->height;
++    if (x1 <= x0 || y1 <= y0) {
++        memset(ctx->pixels, 0, (size_t)W * H * 4);
++        return;
++    }
++    for (int y = 0; y < H; y++) {
++        uint8_t *row = ctx->pixels + (size_t)y * W * 4;
++        if (y < y0 || y >= y1) {
++            memset(row, 0, (size_t)W * 4);
++        } else {
++            if (x0 > 0) memset(row, 0, (size_t)x0 * 4);
++            if (x1 < W) memset(row + (size_t)x1 * 4, 0, (size_t)(W - x1) * 4);
++        }
++    }
++}
++
+ /* Composite a source RGBA pixel onto a destination pixel with the given
+    composite operation and global alpha. */
+ static inline void blend_pixel(uint8_t *dst,
+@@ -121,7 +217,10 @@ static inline void blend_pixel(uint8_t *dst,
+                                 float global_alpha, int comp_op)
+ {
+     int src_a = (int)(sa * global_alpha + 0.5f);
+-    if (src_a <= 0) return;
++    if (src_a <= 0) {
++        if (comp_clears_dst(comp_op)) dst[0] = dst[1] = dst[2] = dst[3] = 0;
++        return;
++    }
+ 
+     if (comp_op == CANVAS2D_COMP_COPY) {
+         dst[0] = sr;
+@@ -198,7 +297,21 @@ static inline void blend_pixel(uint8_t *dst,
+         return;
+     }
+ 
+-    /* Unimplemented modes fall back to source-over. */
++    if (comp_op == CANVAS2D_COMP_DIFFERENCE || comp_op == CANVAS2D_COMP_SATURATION) {
++        blend_special(dst, sr, sg, sb, src_a, comp_op);
++        return;
++    }
++
++    if (comp_op >= CANVAS2D_COMP_SOURCE_ATOP && comp_op <= CANVAS2D_COMP_DEST_OUT) {
++        blend_porter_duff(dst, sr, sg, sb, src_a, comp_op);
++        return;
++    }
++    if (comp_op == CANVAS2D_COMP_XOR) {
++        blend_porter_duff(dst, sr, sg, sb, src_a, comp_op);
++        return;
++    }
++
++    /* Anything else falls back to source-over. */
+     {
+         int inv = 255 - src_a;
+         int out_a = src_a + ((dst_a * inv + 127) / 255);
+@@ -245,7 +358,9 @@ static void free_state(DrawState *s)
  void canvas2d_init(void)
  {
      memset(s_contexts, 0, sizeof(s_contexts));
@@ -4736,7 +4936,7 @@ index 9e47eca..abc3743 100644
      s_ctx_count = 0;
  }
  
-@@ -288,7 +291,8 @@ Canvas2DHandle canvas2d_create(int width, int height)
+@@ -288,7 +403,8 @@ Canvas2DHandle canvas2d_create(int width, int height)
      uint64_t alloc_check = (uint64_t)width * (uint64_t)height * 4;
      if (alloc_check > SIZE_MAX) return CANVAS2D_HANDLE_INVALID;
  
@@ -4746,7 +4946,7 @@ index 9e47eca..abc3743 100644
          if (!s_contexts[i].active) {
              Canvas2DCtx *ctx = &s_contexts[i];
              size_t buf_size = (size_t)alloc_check;
-@@ -297,13 +301,19 @@ Canvas2DHandle canvas2d_create(int width, int height)
+@@ -297,13 +413,19 @@ Canvas2DHandle canvas2d_create(int width, int height)
  
              ctx->width = width;
              ctx->height = height;
@@ -4768,7 +4968,7 @@ index 9e47eca..abc3743 100644
              return ctx->handle;
          }
      }
-@@ -315,6 +325,7 @@ void canvas2d_destroy(Canvas2DHandle handle)
+@@ -315,6 +437,7 @@ void canvas2d_destroy(Canvas2DHandle handle)
      Canvas2DCtx *ctx = find_ctx(handle);
      if (!ctx) return;
  
@@ -4776,7 +4976,7 @@ index 9e47eca..abc3743 100644
      free(ctx->pixels);
      free_state(&ctx->state);
      for (int j = 0; j < ctx->state_depth; j++) {
-@@ -338,6 +349,7 @@ void canvas2d_resize(Canvas2DHandle handle, int width, int height)
+@@ -338,6 +461,7 @@ void canvas2d_resize(Canvas2DHandle handle, int width, int height)
      uint8_t *new_pixels = calloc(1, buf_size);
      if (!new_pixels) return;
  
@@ -4784,7 +4984,7 @@ index 9e47eca..abc3743 100644
      free(ctx->pixels);
      ctx->pixels = new_pixels;
      ctx->width = width;
-@@ -364,6 +376,11 @@ size_t canvas2d_context_count(void)
+@@ -364,6 +488,11 @@ size_t canvas2d_context_count(void)
      return s_ctx_count;
  }
  
@@ -4796,7 +4996,7 @@ index 9e47eca..abc3743 100644
  /* State setters */
  
  void canvas2d_set_fill_color(Canvas2DHandle h, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
-@@ -444,6 +461,98 @@ void canvas2d_restore(Canvas2DHandle h)
+@@ -444,6 +573,101 @@ void canvas2d_restore(Canvas2DHandle h)
  
  /* Drawing operations */
  
@@ -4854,7 +5054,10 @@ index 9e47eca..abc3743 100644
 +{
 +    if (n <= 0) return;
 +    int src_a = (int)(sa * ga + 0.5f);
-+    if (src_a <= 0) return;
++    if (src_a <= 0) {
++        if (comp_clears_dst(comp)) memset(dst, 0, (size_t)n * 4);
++        return;
++    }
 +
 +    if (comp == CANVAS2D_COMP_COPY || (comp == CANVAS2D_COMP_SOURCE_OVER && src_a >= 255)) {
 +        uint32_t a = comp == CANVAS2D_COMP_COPY ? (uint32_t)src_a : 255u;
@@ -4895,7 +5098,7 @@ index 9e47eca..abc3743 100644
  void canvas2d_fill_rect(Canvas2DHandle h, int x, int y, int w, int h2)
  {
      Canvas2DCtx *ctx = find_ctx(h);
-@@ -461,12 +570,574 @@ void canvas2d_fill_rect(Canvas2DHandle h, int x, int y, int w, int h2)
+@@ -461,12 +685,575 @@ void canvas2d_fill_rect(Canvas2DHandle h, int x, int y, int w, int h2)
      float ga = ctx->state.global_alpha;
      int comp = ctx->state.composite_op;
  
@@ -4905,6 +5108,7 @@ index 9e47eca..abc3743 100644
 -            blend_pixel(dst, fr, fg, fb, fa, ga, comp);
 +    for (int py = y0; py < y1; py++)
 +        fill_span(ctx->pixels + ((size_t)py * ctx->width + x0) * 4, x1 - x0, fr, fg, fb, fa, ga, comp);
++    if (comp_clears_dst(comp)) clear_outside(ctx, x0, y0, x1, y1);
 +}
 +
 +#define GRADIENT_LUT_SIZE 1024
@@ -5388,8 +5592,8 @@ index 9e47eca..abc3743 100644
 +                    fill_span(ctx->pixels + ((size_t)y * ctx->width + xa) * 4, xb - xa, fr, fg, fb, fa, ga, comp);
 +                }
 +            }
-         }
-     }
++        }
++    }
 +    free(xs);
 +}
 +
@@ -5430,9 +5634,9 @@ index 9e47eca..abc3743 100644
 +            ne++;
 +            if (y0 < min_y) min_y = y0;
 +            if (y1 > max_y) max_y = y1;
-+        }
+         }
 +        p += 2 * (size_t)n;
-+    }
+     }
 +    if (ne == 0) { free(edges); return; }
 +
 +    int ch = ctx->height, cw = ctx->width;
@@ -5474,7 +5678,90 @@ index 9e47eca..abc3743 100644
  }
  
  void canvas2d_clear_rect(Canvas2DHandle h, int x, int y, int w, int h2)
-@@ -891,6 +1562,49 @@ float canvas2d_measure_text(Canvas2DHandle h, const char *text)
+@@ -552,6 +1339,7 @@ void canvas2d_draw_image(Canvas2DHandle h,
+ 
+     float ga = ctx->state.global_alpha;
+     int comp = ctx->state.composite_op;
++    int clears = comp_clears_dst(comp);
+ 
+     for (int py = 0; py < dh; py++) {
+         int dst_y = dy + py;
+@@ -560,17 +1348,26 @@ void canvas2d_draw_image(Canvas2DHandle h,
+         for (int px = 0; px < dw; px++) {
+             int dst_x = dx + px;
+             if (dst_x < 0 || dst_x >= ctx->width) continue;
++            uint8_t *d = ctx->pixels + ((size_t)dst_y * ctx->width + dst_x) * 4;
+ 
+             /* Nearest-neighbor sampling; int64 avoids overflow. */
+             int src_x = sx + (int)(((int64_t)px * sw) / dw);
+             int src_y = sy + (int)(((int64_t)py * sh) / dh);
+-            if (src_x < 0 || src_x >= src_w || src_y < 0 || src_y >= src_h) continue;
++            if (src_x < 0 || src_x >= src_w || src_y < 0 || src_y >= src_h) {
++                if (clears) d[0] = d[1] = d[2] = d[3] = 0; /* nothing to draw here: an empty source */
++                continue;
++            }
+ 
+             const uint8_t *s = src_pixels + ((size_t)src_y * src_w + src_x) * 4;
+-            uint8_t *d = ctx->pixels + ((size_t)dst_y * ctx->width + dst_x) * 4;
+             blend_pixel(d, s[0], s[1], s[2], s[3], ga, comp);
+         }
+     }
++    if (clears) {
++        /* destination-in, copy and friends also clear everything outside the drawn rectangle */
++        int cx0 = clampi(dx, 0, ctx->width), cy0 = clampi(dy, 0, ctx->height);
++        int cx1 = clampi((int)((int64_t)dx + dw), 0, ctx->width), cy1 = clampi((int)((int64_t)dy + dh), 0, ctx->height);
++        clear_outside(ctx, cx0, cy0, cx1, cy1);
++    }
+ }
+ 
+ /* Pixel manipulation */
+@@ -811,6 +1608,7 @@ static FontEntry *load_fallback_font(size_t i)
+ typedef struct {
+     FontEntry *fe;
+     int        glyph;     /* 0 = notdef in fe */
++    int        blank;     /* whitespace/control character that no font has a glyph for: draw nothing */
+ } GlyphRef;
+ 
+ /* The font that can draw `cp`: the requested font, another game font, or a
+@@ -818,20 +1616,23 @@ typedef struct {
+    requested font so their advances match its metrics. */
+ static GlyphRef resolve_glyph(FontEntry *primary, int cp)
+ {
+-    GlyphRef r = { primary, stbtt_FindGlyphIndex(&primary->info, cp) };
+-    if (r.glyph || cp <= 0x20 || cp == 0x3000 || cp == 0xA0) return r;
++    GlyphRef r = { primary, stbtt_FindGlyphIndex(&primary->info, cp), 0 };
++    if (r.glyph) return r;
++    int whitespace = cp <= 0x20 || cp == 0x3000 || cp == 0xA0 || (cp >= 0x7F && cp < 0xA0);
++    if (whitespace) r.blank = 1; /* if nothing below finds a glyph, the .notdef box must not be drawn */
++    if (cp < 0x20 || (cp >= 0x7F && cp < 0xA0)) return r;  /* control characters: nothing to look for */
+ 
+     for (int i = 0; i < s_font_count; i++) {
+         FontEntry *fe = &s_fonts[i];
+         if (!fe->valid || fe == primary) continue;
+         int g = stbtt_FindGlyphIndex(&fe->info, cp);
+-        if (g) { r.fe = fe; r.glyph = g; return r; }
++        if (g) { r.fe = fe; r.glyph = g; r.blank = 0; return r; }
+     }
+     for (size_t i = 0; i < SYSTEM_FALLBACK_COUNT; i++) {
+         FontEntry *fe = load_fallback_font(i);
+         if (!fe) continue;
+         int g = stbtt_FindGlyphIndex(&fe->info, cp);
+-        if (g) { r.fe = fe; r.glyph = g; return r; }
++        if (g) { r.fe = fe; r.glyph = g; r.blank = 0; return r; }
+     }
+     return r;
+ }
+@@ -845,7 +1646,8 @@ static float glyph_advance(FontEntry *primary, float pixel_size, int cp, int nex
+     int advance, lsb;
+     stbtt_GetGlyphHMetrics(&g.fe->info, g.glyph, &advance, &lsb);
+     float width = advance * scale;
+-    if (next_cp) {
++    if (g.blank && !g.glyph) width = cp < 0x20 ? 0.0f : pixel_size * 0.28f; /* no glyph anywhere: a plain gap */
++    if (next_cp && !(g.blank && !g.glyph)) {
+         GlyphRef n = resolve_glyph(primary, next_cp);
+         if (n.fe == g.fe) {
+             width += stbtt_GetGlyphKernAdvance(&g.fe->info, g.glyph, n.glyph) * scale;
+@@ -891,6 +1693,49 @@ float canvas2d_measure_text(Canvas2DHandle h, const char *text)
      return measure_text_internal(fe, ctx->state.font_size, text);
  }
  
@@ -5503,7 +5790,7 @@ index 9e47eca..abc3743 100644
 +        float scale = stbtt_ScaleForMappingEmToPixels(&g.fe->info, ctx->state.font_size);
 +        int x0, y0, x1, y1;
 +        stbtt_GetGlyphBitmapBox(&g.fe->info, g.glyph, scale, scale, &x0, &y0, &x1, &y1);
-+        if (x1 > x0 && y1 > y0) {
++        if (!g.blank && x1 > x0 && y1 > y0) {
 +            if (!any || pen + x0 < min_x) min_x = pen + x0;
 +            if (!any || pen + x1 > max_x) max_x = pen + x1;
 +            if (-y0 > ascent) ascent = (float)-y0;
@@ -5524,11 +5811,29 @@ index 9e47eca..abc3743 100644
  /* Browser text rasterizers (Skia/DirectWrite) boost partial coverage so
     glyphs read heavier than linear anti-aliasing; without it, text here is
     visibly lighter than in the NW.js player. Coverage is mapped through
+@@ -991,7 +1836,7 @@ static void draw_text(Canvas2DCtx *ctx, const char *text, float x, float y,
+         float gscale = stbtt_ScaleForMappingEmToPixels(&g.fe->info, pixel_size);
+ 
+         int gw, gh, gx, gy;
+-        uint8_t *bitmap = stbtt_GetGlyphBitmap(&g.fe->info, 0, gscale,
++        uint8_t *bitmap = g.blank ? NULL : stbtt_GetGlyphBitmap(&g.fe->info, 0, gscale,
+                                                 g.glyph, &gw, &gh, &gx, &gy);
+         if (bitmap && stroke_radius > 0.0f) {
+             int margin = 0;
 diff --git a/src/rendering/canvas2d.h b/src/rendering/canvas2d.h
-index 8ea38e1..8db8f43 100644
+index 8ea38e1..117e02c 100644
 --- a/src/rendering/canvas2d.h
 +++ b/src/rendering/canvas2d.h
-@@ -92,6 +92,22 @@ void canvas2d_restore(Canvas2DHandle h);
+@@ -48,6 +48,8 @@ enum {
+     CANVAS2D_COMP_XOR         = 10,
+     CANVAS2D_COMP_MULTIPLY    = 11,
+     CANVAS2D_COMP_SCREEN      = 12,
++    CANVAS2D_COMP_DIFFERENCE  = 13,
++    CANVAS2D_COMP_SATURATION  = 14,
+ };
+ 
+ /* Initialize the Canvas2D subsystem. Call once at startup. */
+@@ -92,6 +94,22 @@ void canvas2d_restore(Canvas2DHandle h);
  /* Fill a rectangle with the current fill color. */
  void canvas2d_fill_rect(Canvas2DHandle h, int x, int y, int w, int h2);
  
@@ -5551,7 +5856,7 @@ index 8ea38e1..8db8f43 100644
  /* Clear a rectangle to transparent black. */
  void canvas2d_clear_rect(Canvas2DHandle h, int x, int y, int w, int h2);
  
-@@ -132,8 +148,16 @@ void canvas2d_stroke_text(Canvas2DHandle h, const char *text, float x, float y);
+@@ -132,8 +150,16 @@ void canvas2d_stroke_text(Canvas2DHandle h, const char *text, float x, float y);
  
  /* Measure the width of `text` in pixels using the current font. */
  float canvas2d_measure_text(Canvas2DHandle h, const char *text);
@@ -6158,8 +6463,71 @@ index 5315989..6369629 100644
  void sprite_batch_draw(SpriteBatch *sb, uint32_t texture,
                         float x, float y, float w, float h,
                         float u0, float v0, float u1, float v1,
+diff --git a/src/rendering/tilemap.c b/src/rendering/tilemap.c
+index 29c24f7..d8d6264 100644
+--- a/src/rendering/tilemap.c
++++ b/src/rendering/tilemap.c
+@@ -11,6 +11,7 @@
+ void tilemap_draw_tiles(const float *elements, int count,
+                         const TilesetInfo *tilesets, int num_tilesets,
+                         float offset_x, float offset_y,
++                        float scale_x, float scale_y,
+                         SpriteBatch *batch)
+ {
+     if (!elements || count <= 0 || !batch) return;
+@@ -20,17 +21,19 @@ void tilemap_draw_tiles(const float *elements, int count,
+         int   set_number = (int)e[0];
+         float sx = e[1];
+         float sy = e[2];
+-        float dx = e[3] + offset_x;
+-        float dy = e[4] + offset_y;
++        float dx = e[3] * scale_x + offset_x;
++        float dy = e[4] * scale_y + offset_y;
+         float w  = e[5];
+         float h  = e[6];
++        float dw = w * scale_x;
++        float dh = h * scale_y;
+ 
+         if (w <= 0 || h <= 0) continue;
+ 
+         if (set_number < 0) {
+             /* Shadow tile: black-tinted white texture at 50% alpha. */
+             sprite_batch_draw(batch, 0,
+-                              dx, dy, w, h,
++                              dx, dy, dw, dh,
+                               0.0f, 0.0f, 1.0f, 1.0f,
+                               0xFF000000, 0.5f);
+             continue;
+@@ -49,7 +52,7 @@ void tilemap_draw_tiles(const float *elements, int count,
+         float v1 = (sy + h) * inv_h;
+ 
+         sprite_batch_draw(batch, ts->gl_texture,
+-                          dx, dy, w, h,
++                          dx, dy, dw, dh,
+                           u0, v0, u1, v1,
+                           0xFFFFFFFF, 1.0f);
+     }
+diff --git a/src/rendering/tilemap.h b/src/rendering/tilemap.h
+index 5658d2d..4bcbc73 100644
+--- a/src/rendering/tilemap.h
++++ b/src/rendering/tilemap.h
+@@ -19,11 +19,12 @@ typedef struct {
+ 
+ /* Draw packed tile rectangles into the sprite batch. `elements` holds 7 floats
+    per tile: [setNumber, sx, sy, dx, dy, w, h]; setNumber indexes `tilesets`
+-   and -1 draws a shadow tile (black, 50% alpha). offset_x/y shift all
+-   destination coordinates. */
++   and -1 draws a shadow tile (black, 50% alpha). Destination coordinates and sizes are multiplied by
++   scale_x/scale_y (a zoomed map) and then shifted by offset_x/y. */
+ void tilemap_draw_tiles(const float *elements, int count,
+                         const TilesetInfo *tilesets, int num_tilesets,
+                         float offset_x, float offset_y,
++                        float scale_x, float scale_y,
+                         SpriteBatch *batch);
+ 
+ #endif /* RMMZ_TILEMAP_H */
 diff --git a/src/shims/canvas2d_shim.js b/src/shims/canvas2d_shim.js
-index 76f8bea..19c543f 100644
+index 76f8bea..1d04eb8 100644
 --- a/src/shims/canvas2d_shim.js
 +++ b/src/shims/canvas2d_shim.js
 @@ -15,7 +15,7 @@
@@ -6230,7 +6598,16 @@ index 76f8bea..19c543f 100644
          var m = str.match(/^#([0-9a-f])([0-9a-f])([0-9a-f])$/);
          if (m) {
              return [
-@@ -188,6 +219,8 @@
+@@ -132,6 +163,8 @@
+         "xor":         10,
+         "multiply":    11,
+         "screen":      12,
++        "difference":  13,
++        "saturation":  14,
+     };
+ 
+     var _textAligns = {
+@@ -188,6 +221,8 @@
              var w = this.canvas._width || 1;
              var h = this.canvas._height || 1;
              this._handle = __native_canvas2d.create(w, h);
@@ -6239,7 +6616,7 @@ index 76f8bea..19c543f 100644
          }
      };
  
-@@ -392,8 +425,25 @@
+@@ -392,8 +427,25 @@
              if (m) fontSize = parseInt(m[1]);
              return { width: (text || "").length * fontSize * 0.6 };
          }
@@ -6267,7 +6644,7 @@ index 76f8bea..19c543f 100644
      };
  
      CanvasRenderingContext2D.prototype.drawImage = function(source) {
-@@ -507,8 +557,12 @@
+@@ -507,8 +559,12 @@
      }
  
      CanvasGradient.prototype.addColorStop = function(offset, color) {
@@ -6282,7 +6659,7 @@ index 76f8bea..19c543f 100644
      };
  
      function _interpolateGradientColor(stops, t) {
-@@ -561,6 +615,22 @@
+@@ -561,6 +617,22 @@
          x = x | 0; y = y | 0; w = w | 0; h = h | 0;
          if (w <= 0 || h <= 0) return;
  
@@ -6305,7 +6682,7 @@ index 76f8bea..19c543f 100644
          if (grad._radial) {
              var cx = grad._cx, cy = grad._cy;
              var r0 = grad._r0, r1 = grad._r1;
-@@ -779,8 +849,8 @@
+@@ -779,8 +851,8 @@
  
      CanvasRenderingContext2D.prototype.lineTo = function(x, y) {
          if (!this._pathCur) { this.moveTo(x, y); return; }
@@ -6316,7 +6693,7 @@ index 76f8bea..19c543f 100644
          this._curPt = [x, y];
      };
  
-@@ -820,12 +890,24 @@
+@@ -820,12 +892,24 @@
              if (delta < -TWO_PI) delta = -TWO_PI;
          }
          var segs = Math.max(8, Math.min(96, Math.ceil(r * this._ctmScale() * 0.5 * Math.abs(delta) / Math.PI * 2)));
@@ -6346,7 +6723,7 @@ index 76f8bea..19c543f 100644
      };
  
      CanvasRenderingContext2D.prototype.ellipse = function(x, y, rx, ry, rotation, sa, ea, ccw) {
-@@ -906,9 +988,53 @@
+@@ -906,9 +990,53 @@
          }
      };
  
@@ -6400,7 +6777,7 @@ index 76f8bea..19c543f 100644
          if (this._fillStyle instanceof CanvasGradient) {
              this._rasterizePath(function(x, y, w) { self._fillGradientRect(x, y, w, 1); });
          } else {
-@@ -939,7 +1065,9 @@
+@@ -939,7 +1067,9 @@
          this._path = quads;
          var c = parseColor(this._strokeStyle);
          __native_canvas2d.setFillColor(h, c[0], c[1], c[2], c[3]);
@@ -6411,7 +6788,7 @@ index 76f8bea..19c543f 100644
          this._path = saved;
          this._syncFillColor();
      };
-@@ -980,9 +1108,13 @@
+@@ -980,9 +1110,13 @@
              __native_canvas2d.destroy(this._handle);
          }
          this._handle = 0;
@@ -8989,7 +9366,7 @@ index 0000000..35cc245
 +    };
 +})();
 diff --git a/src/shims/pixi_shim.js b/src/shims/pixi_shim.js
-index 0ad7a94..f83e4c1 100644
+index 0ad7a94..e3aa942 100644
 --- a/src/shims/pixi_shim.js
 +++ b/src/shims/pixi_shim.js
 @@ -368,6 +368,89 @@
@@ -9192,6 +9569,15 @@ index 0ad7a94..f83e4c1 100644
      BaseTexture.fromCanvas = function(canvas, scaleMode) {
          var bt = new BaseTexture(null, { scaleMode: scaleMode });
          bt.width = canvas.width || canvas._width || 0;
+@@ -1923,7 +2065,7 @@
+     function _filtersAreNoOp(filters) {
+         for (var i = 0; i < filters.length; i++) {
+             var f = filters[i];
+-            if (f.enabled === false) continue;
++            if (f.enabled === false || f._rmBroken) continue;
+             /* AlphaFilter needs no FBO pass; filterArea clipping uses GL scissor. */
+             if (_isAlphaFilter(f)) continue;
+             if (_isColorFilter(f)) {
 @@ -2269,6 +2411,10 @@
          this.calculateVertices();
  
@@ -9214,6 +9600,39 @@ index 0ad7a94..f83e4c1 100644
              var tex = this._texture;
              var bt = tex.baseTexture;
              var glTex = bt._glTexture || 0;
+@@ -4771,7 +4921,7 @@
+         var currentTex = inputFBO.texture;
+         var enabledFilters = [];
+         for (var f = 0; f < this.filters.length; f++) {
+-            if (this.filters[f].enabled !== false) {
++            if (this.filters[f].enabled !== false && !this.filters[f]._rmBroken) {
+                 enabledFilters.push(this.filters[f]);
+             }
+         }
+@@ -4784,7 +4934,22 @@
+ 
+                 /* Tell multi-pass filters where to draw their final result. */
+                 _filterOutputTarget = { fbo: outputFBO.fbo, w: screenW, h: screenH };
+-                enabledFilters[fi].apply(renderer, currentTex, screenW, screenH);
++                try {
++                    enabledFilters[fi].apply(renderer, currentTex, screenW, screenH);
++                } catch (filterError) {
++                    /* A filter this renderer cannot run (for example a multi-pass pixi-filters effect) must not take the
++                       whole screen down: switch it off, log it once and pass the picture through unchanged. */
++                    var failed = enabledFilters[fi];
++                    failed._rmBroken = true; /* stays off even when a plugin sets enabled = true again */
++                    if (typeof console !== "undefined") {
++                        console.warn("filter switched off (" + ((failed.constructor && failed.constructor.name) || "?") + "): " +
++                                     (filterError && filterError.message ? filterError.message : filterError));
++                    }
++                    __native_renderer.bindRenderTexture(outputFBO.fbo, screenW, screenH);
++                    __native_renderer.beginFrameTransparent();
++                    __native_renderer.setBlendMode(4); /* premultiplied normal: a plain copy onto the cleared target */
++                    __native_renderer.drawQuad(currentTex, 0, 0, screenW, screenH, 0, 1, 1, 0, 0xFFFFFF, 1.0);
++                }
+                 _filterOutputTarget = null;
+ 
+                 __native_renderer.flush();
 diff --git a/src/shims/plugin_compat.js b/src/shims/plugin_compat.js
 index dc5e4dd..b0a1dda 100644
 --- a/src/shims/plugin_compat.js
@@ -9407,10 +9826,26 @@ index dc5e4dd..b0a1dda 100644
 +    requestAnimationFrame(check);
 +})();
 diff --git a/src/shims/tilemap_shim.js b/src/shims/tilemap_shim.js
-index c89cb4e..60effd6 100644
+index c89cb4e..2c8aef5 100644
 --- a/src/shims/tilemap_shim.js
 +++ b/src/shims/tilemap_shim.js
-@@ -236,7 +236,8 @@
+@@ -127,11 +127,14 @@
+         var wt = this.worldTransform;
+         var ox = wt ? wt.tx : 0;
+         var oy = wt ? wt.ty : 0;
++        /* the layer may sit inside a scaled container (map zoom): tiles are scaled with it */
++        var sx = wt && wt.a ? wt.a : 1;
++        var sy = wt && wt.d ? wt.d : 1;
+ 
+         __native_tilemap.drawTiles(
+             buf.buffer, numElements,
+             texIds, texWidths, texHeights, numTs,
+-            ox, oy
++            ox, oy, sx, sy
+         );
+     };
+ 
+@@ -236,7 +239,8 @@
              if (bitmap._baseTexture && bitmap._baseTexture._glTexture &&
                  !bitmap._baseTexture._glTextureIsImageOwned &&
                  typeof __native_renderer !== "undefined") {
