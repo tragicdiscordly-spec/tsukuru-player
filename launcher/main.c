@@ -748,7 +748,7 @@ static Settings settings;
 static void settings_defaults(Settings* st) {
 	for (int i = 0; i < PAD_BUTTONS; i++) {
 		st->map[i] = pad_buttons[i].def;
-		st->key[i] = 0;
+		st->key[i] = i == 0 ? 90 : i == 1 ? 88 : 0; /* Cross also presses Z, Circle also presses X */
 	}
 	st->scale = 0;
 	st->pointer = 1;

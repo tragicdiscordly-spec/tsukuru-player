@@ -2663,7 +2663,7 @@ index 0b731d2..4ff3408 100644
      /* Step 6: Start the game. main.js waits for DOM script-load callbacks that
         never fire here (scripts are pre-loaded), so run PluginManager.setup and
 diff --git a/src/io/file_io.c b/src/io/file_io.c
-index 11c14c7..76903b2 100644
+index 11c14c7..21602b0 100644
 --- a/src/io/file_io.c
 +++ b/src/io/file_io.c
 @@ -9,6 +9,11 @@
@@ -2678,7 +2678,91 @@ index 11c14c7..76903b2 100644
  #include <sys/stat.h>
  
  #ifdef _WIN32
-@@ -244,66 +249,185 @@ bool file_io_resolve_path(const char *relative_path, char *out, size_t out_size)
+@@ -29,6 +34,33 @@
+ 
+ static char s_game_root[MAX_PATH_LEN] = "";
+ 
++/* NW.js (the desktop player these games are made for) treats a path that starts with "/" as relative to the folder
++   of the app (where package.json is), and "../x" from the page is allowed to reach that folder too. For a game
++   exported with a "www" folder that app folder is the one above "www" (game data such as /data/x.csv can live there).
++   The game root is what the runtime is given: the www folder itself. */
++static char s_package_root[MAX_PATH_LEN] = "";
++
++static bool plain_exists(const char *path)
++{
++    struct stat st;
++    return stat(path, &st) == 0;
++}
++
++static void compute_package_root(void)
++{
++    snprintf(s_package_root, sizeof(s_package_root), "%s", s_game_root);
++    const char *slash = strrchr(s_game_root, '/');
++    if (!slash || slash == s_game_root || strcasecmp(slash + 1, "www") != 0) return;
++    char parent[MAX_PATH_LEN];
++    size_t n = (size_t)(slash - s_game_root);
++    if (n >= sizeof(parent) - 16) return;
++    memcpy(parent, s_game_root, n);
++    parent[n] = '\0';
++    char probe[MAX_PATH_LEN];
++    snprintf(probe, sizeof(probe), "%s/package.json", parent);
++    if (plain_exists(probe)) snprintf(s_package_root, sizeof(s_package_root), "%s", parent);
++}
++
+ /* Path resolution */
+ 
+ void file_io_set_game_root(const char *root)
+@@ -72,6 +104,7 @@ void file_io_set_game_root(const char *root)
+         len--;
+     }
+     s_game_root[len] = '\0';
++    compute_package_root();
+ }
+ 
+ /* Path character equality: '/' == '\\', and case-insensitive on Windows. */
+@@ -200,7 +233,17 @@ bool file_io_resolve_path(const char *relative_path, char *out, size_t out_size)
+         if (s_game_root[0] != '\0') {
+             size_t root_len = strlen(s_game_root);
+             if (!path_has_prefix(relative_path, s_game_root)) {
+-                return false;
++                /* "/data/x.csv": relative to the app folder (NW.js), else to the game root. Never outside both. */
++                if (relative_path[0] != '/' && relative_path[0] != '\\') return false;
++                char norm[1024], candidate[MAX_PATH_LEN];
++                if (!normalize_components(relative_path, norm, sizeof(norm))) return false;
++                int w1 = snprintf(candidate, sizeof(candidate), "%s/%s", s_package_root, norm);
++                if (w1 > 0 && (size_t)w1 < sizeof(candidate) && plain_exists(candidate) && (size_t)w1 < out_size) {
++                    memcpy(out, candidate, (size_t)w1 + 1);
++                    return true;
++                }
++                int w2 = snprintf(out, out_size, "%s/%s", s_game_root, norm);
++                return w2 > 0 && (size_t)w2 < out_size;
+             }
+             /* root="/game" must reject "/game2/...". */
+             char next = relative_path[root_len];
+@@ -226,9 +269,20 @@ bool file_io_resolve_path(const char *relative_path, char *out, size_t out_size)
+     if (s_game_root[0] != '\0') {
+         char norm[1024];
+         if (path_has_traversal(relative_path)) {
+-            /* ".." is fine as long as the path never leaves the root. */
++            /* ".." is fine as long as the path never leaves the root... */
+             if (!normalize_components(relative_path, norm, sizeof(norm))) {
+-                return false;
++                /* ...or, for a game in a "www" folder, the app folder above it (NW.js lets "../data/x" reach it). */
++                if (strcmp(s_package_root, s_game_root) == 0) return false;
++                char full[2048], clean[MAX_PATH_LEN];
++                snprintf(full, sizeof(full), "%s/%s", s_game_root + (s_game_root[0] == '/' ? 1 : 0), relative_path);
++                if (!normalize_components(full, clean, sizeof(clean))) return false;
++                char abs_path[MAX_PATH_LEN + 2];
++                int w = snprintf(abs_path, sizeof(abs_path), "%s%s", s_game_root[0] == '/' ? "/" : "", clean);
++                if (w <= 0 || (size_t)w >= out_size) return false;
++                size_t plen = strlen(s_package_root);
++                if (strncmp(abs_path, s_package_root, plen) != 0 || (abs_path[plen] != '/' && abs_path[plen] != '\0')) return false;
++                memcpy(out, abs_path, (size_t)w + 1);
++                return true;
+             }
+             relative_path = norm;
+         }
+@@ -244,66 +298,185 @@ bool file_io_resolve_path(const char *relative_path, char *out, size_t out_size)
  
  /* File read */
  
@@ -2891,7 +2975,7 @@ index 11c14c7..76903b2 100644
  /* File write */
  
  bool file_io_write_text(const char *path, const char *data)
-@@ -360,7 +484,14 @@ bool file_io_exists(const char *path)
+@@ -360,7 +533,14 @@ bool file_io_exists(const char *path)
  {
      if (!path) return false;
      struct stat st;
@@ -3043,7 +3127,7 @@ index cbec9a7..2fdceda 100644
  
 diff --git a/src/platform/platform_sdl2.c b/src/platform/platform_sdl2.c
 new file mode 100644
-index 0000000..c96ed80
+index 0000000..a69f6f9
 --- /dev/null
 +++ b/src/platform/platform_sdl2.c
 @@ -0,0 +1,1483 @@
@@ -3545,7 +3629,7 @@ index 0000000..c96ed80
 +    "cross", "circle", "square", "triangle", "l1", "r1", "l2", "r2", "l3", "r3", "options", "touchpad",
 +};
 +static float settings_pointer_gain = 1.6f;
-+static int settings_key[SETTINGS_PAD_BUTTONS];   /* DOM key code a pad button also presses, 0 = none */
++static int settings_key[SETTINGS_PAD_BUTTONS] = { 90, 88 };   /* DOM key code a pad button also presses, 0 = none; by default Cross presses Z and Circle presses X */
 +
 +static void load_settings(void)
 +{
