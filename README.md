@@ -69,7 +69,9 @@ Not every game runs. If a game closes right after it starts, the launcher says w
   really needs the DLL (Pokemon Uranium, for example) will not work.
 * **MV/MZ games that use their own file protection** (hashed file names, a modified player) cannot be read; the
   project does not try to get around that.
-* **MV/MZ plugins that need Node.js features** (for example `Buffer`) fail to load; the game may still run without them.
+* **MV/MZ plugins that need Node.js features beyond the common ones.** The runtime provides what plugins usually use
+  (`Buffer`, files, paths, `os`, `events`, `util`, `zlib` with the game's pako, the game's own CommonJS files, `nw`);
+  running other programs, networking and Steam are not available, and plugins that need them lose that feature.
 
 ### RTP (RPG Maker's shared default graphics and sounds)
 
