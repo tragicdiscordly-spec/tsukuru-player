@@ -6483,10 +6483,10 @@ index 0000000..611fe2a
 +})();
 diff --git a/src/shims/node_shim.js b/src/shims/node_shim.js
 new file mode 100755
-index 0000000..70196be
+index 0000000..6614c0d
 --- /dev/null
 +++ b/src/shims/node_shim.js
-@@ -0,0 +1,1308 @@
+@@ -0,0 +1,1548 @@
 +/* SPDX-License-Identifier: GPL-3.0-or-later */
 +/*
 + * Node.js pieces that RPG Maker MV/MZ games and their plugins use. On a PC those games run in NW.js, which has Node
@@ -6932,6 +6932,35 @@ index 0000000..70196be
 +    var fs = baseRequire("fs");
 +    var path = baseRequire("path");
 +
++    /* NW.js starts in the folder that holds package.json, which for desktop MV/MZ games is the folder ABOVE www; games
++       read files like "www/Copyrights.txt" relative to it. Windows paths may also use backslashes. */
++    var gameRootDir = (io && io.getGameRoot && io.getGameRoot()) || ".";
++    var pkgRoot = (function() {
++        /* the native file functions only reach inside the game folder, so package.json itself cannot be checked */
++        return /[\/\\]www$/i.test(gameRootDir) ? path.dirname(gameRootDir) : null;
++    })();
++
++    function fixPath(p) {
++        if (typeof p !== "string") return p;
++        if (p.indexOf("\\") >= 0) p = p.replace(/\\/g, "/");
++        if (pkgRoot && /^(\.\/)?www\//i.test(p)) return pkgRoot + "/" + p.replace(/^\.\//, "");
++        return p;
++    }
++
++    /* Windows games write into %APPDATA%\\<name>\\... and expect those folders to exist. The folder lives inside the game
++       folder here (see process.env.APPDATA below); create what is missing when something is written or listed there. */
++    function appDataPrefix() { return gameRootDir + "/appdata"; }
++    function ensureAppDir(dir) {
++        var root = appDataPrefix();
++        if (typeof dir !== "string" || (dir !== root && dir.indexOf(root + "/") !== 0)) return;
++        var parts = dir.substring(root.length).split("/").filter(Boolean), cur = root;
++        if (!io.existsSync(cur)) io.mkdirSync(cur);
++        for (var i = 0; i < parts.length; i++) {
++            cur += "/" + parts[i];
++            if (!io.existsSync(cur)) io.mkdirSync(cur);
++        }
++    }
++
 +    function toArrayBuffer(view) {
 +        if (view instanceof ArrayBuffer) return view;
 +        if (view.byteOffset === 0 && view.byteLength === view.buffer.byteLength) return view.buffer;
@@ -7183,6 +7212,26 @@ index 0000000..70196be
 +    fs.createReadStream = unavailable("fs.createReadStream");
 +    fs.createWriteStream = unavailable("fs.createWriteStream");
 +    fs.watch = unavailable("fs.watch");
++
++    var WRITES = { writeFileSync: 1, appendFileSync: 1, openSync: 1 }, LISTS = { readdirSync: 1, statSync: 1, lstatSync: 1 };
++    ["readFileSync", "writeFileSync", "appendFileSync", "existsSync", "mkdirSync", "readdirSync", "statSync",
++     "lstatSync", "accessSync", "rmSync", "rmdirSync", "openSync", "unlinkSync", "realpathSync"].forEach(function(n) {
++        var original = fs[n];
++        if (typeof original !== "function") return;
++        fs[n] = function(p) {
++            p = arguments[0] = fixPath(p);
++            if (typeof p === "string") {
++                if (WRITES[n]) ensureAppDir(path.dirname(p));
++                else if (LISTS[n] && !/\.[A-Za-z0-9]+$/.test(p)) ensureAppDir(p.replace(/\/+$/, ""));
++            }
++            return original.apply(fs, arguments);
++        };
++    });
++    ["copyFileSync", "renameSync"].forEach(function(n) {
++        var original = fs[n];
++        if (typeof original !== "function") return;
++        fs[n] = function(a, b) { return original.call(fs, fixPath(a), fixPath(b)); };
++    });
 +
 +    /* callback and promise versions of the synchronous functions */
 +    var ASYNC = ["readFile", "writeFile", "appendFile", "mkdir", "readdir", "stat", "lstat", "unlink", "rename",
@@ -7553,7 +7602,183 @@ index 0000000..70196be
 +        };
 +    });
 +
-+    /* ------------------------------------------------------------------ crypto (random numbers only) */
++    /* ------------------------------------------------------------------ crypto: hashes */
++
++    /* MD5, SHA-1 and SHA-256 (standard algorithms), with Node's createHash / createHmac interface. */
++
++    function bigCubeRoot(n) { /* floor(cbrt(n)) for a BigInt */
++        var lo = 0n, hi = 1n << (BigInt(n.toString(2).length) / 3n + 2n);
++        while (lo < hi) {
++            var mid = (lo + hi + 1n) >> 1n;
++            if (mid * mid * mid <= n) lo = mid; else hi = mid - 1n;
++        }
++        return lo;
++    }
++    function bigSqrt(n) {
++        var lo = 0n, hi = 1n << (BigInt(n.toString(2).length) / 2n + 2n);
++        while (lo < hi) {
++            var mid = (lo + hi + 1n) >> 1n;
++            if (mid * mid <= n) lo = mid; else hi = mid - 1n;
++        }
++        return lo;
++    }
++
++    var sha256Tables = null;
++    function sha256Init() {
++        if (sha256Tables) return sha256Tables;
++        var primes = [], n = 2;
++        while (primes.length < 64) {
++            var isPrime = true;
++            for (var i = 0; i < primes.length && primes[i] * primes[i] <= n; i++) if (n % primes[i] === 0) { isPrime = false; break; }
++            if (isPrime) primes.push(n);
++            n++;
++        }
++        var K = new Uint32Array(64), H = new Uint32Array(8), mask = 0xFFFFFFFFn;
++        for (var j = 0; j < 64; j++) K[j] = Number(bigCubeRoot(BigInt(primes[j]) << 96n) & mask);
++        for (var h = 0; h < 8; h++) H[h] = Number(bigSqrt(BigInt(primes[h]) << 64n) & mask);
++        sha256Tables = { K: K, H: H };
++        return sha256Tables;
++    }
++
++    function padMessage(b, bigEndian) {
++        var len = b.length, total = (((len + 8) >> 6) + 1) * 64;
++        var m = new Uint8Array(total);
++        m.set(b);
++        m[len] = 0x80;
++        var dv = new DataView(m.buffer);
++        var hi = Math.floor(len / 536870912), lo = (len * 8) >>> 0;
++        if (bigEndian) { dv.setUint32(total - 8, hi); dv.setUint32(total - 4, lo); }
++        else { dv.setUint32(total - 8, lo, true); dv.setUint32(total - 4, hi, true); }
++        return m;
++    }
++
++    function md5(b) {
++        var S = [7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
++                 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21];
++        var K = new Int32Array(64);
++        for (var i = 0; i < 64; i++) K[i] = Math.floor(Math.abs(Math.sin(i + 1)) * 4294967296) | 0;
++        var m = padMessage(b, false), dv = new DataView(m.buffer);
++        var a0 = 0x67452301 | 0, b0 = 0xefcdab89 | 0, c0 = 0x98badcfe | 0, d0 = 0x10325476 | 0;
++        for (var off = 0; off < m.length; off += 64) {
++            var A = a0, B = b0, C = c0, D = d0;
++            for (var r = 0; r < 64; r++) {
++                var F, g;
++                if (r < 16) { F = (B & C) | (~B & D); g = r; }
++                else if (r < 32) { F = (D & B) | (~D & C); g = (5 * r + 1) & 15; }
++                else if (r < 48) { F = B ^ C ^ D; g = (3 * r + 5) & 15; }
++                else { F = C ^ (B | ~D); g = (7 * r) & 15; }
++                F = (F + A + K[r] + dv.getInt32(off + g * 4, true)) | 0;
++                A = D; D = C; C = B;
++                B = (B + ((F << S[r]) | (F >>> (32 - S[r])))) | 0;
++            }
++            a0 = (a0 + A) | 0; b0 = (b0 + B) | 0; c0 = (c0 + C) | 0; d0 = (d0 + D) | 0;
++        }
++        var out = Buffer.alloc(16), od = new DataView(out.buffer, out.byteOffset, 16);
++        od.setInt32(0, a0, true); od.setInt32(4, b0, true); od.setInt32(8, c0, true); od.setInt32(12, d0, true);
++        return out;
++    }
++
++    function sha1(b) {
++        var m = padMessage(b, true), dv = new DataView(m.buffer), w = new Int32Array(80);
++        var h0 = 0x67452301 | 0, h1 = 0xEFCDAB89 | 0, h2 = 0x98BADCFE | 0, h3 = 0x10325476 | 0, h4 = 0xC3D2E1F0 | 0;
++        for (var off = 0; off < m.length; off += 64) {
++            var t;
++            for (t = 0; t < 16; t++) w[t] = dv.getInt32(off + t * 4);
++            for (t = 16; t < 80; t++) { var x = w[t - 3] ^ w[t - 8] ^ w[t - 14] ^ w[t - 16]; w[t] = (x << 1) | (x >>> 31); }
++            var a = h0, bb = h1, c = h2, d = h3, e = h4;
++            for (t = 0; t < 80; t++) {
++                var f, k;
++                if (t < 20) { f = (bb & c) | (~bb & d); k = 0x5A827999; }
++                else if (t < 40) { f = bb ^ c ^ d; k = 0x6ED9EBA1; }
++                else if (t < 60) { f = (bb & c) | (bb & d) | (c & d); k = 0x8F1BBCDC | 0; }
++                else { f = bb ^ c ^ d; k = 0xCA62C1D6 | 0; }
++                var tmp = (((a << 5) | (a >>> 27)) + f + e + k + w[t]) | 0;
++                e = d; d = c; c = (bb << 30) | (bb >>> 2); bb = a; a = tmp;
++            }
++            h0 = (h0 + a) | 0; h1 = (h1 + bb) | 0; h2 = (h2 + c) | 0; h3 = (h3 + d) | 0; h4 = (h4 + e) | 0;
++        }
++        var out = Buffer.alloc(20), od = new DataView(out.buffer, out.byteOffset, 20);
++        [h0, h1, h2, h3, h4].forEach(function(v, i) { od.setInt32(i * 4, v); });
++        return out;
++    }
++
++    function sha256(b) {
++        var tb = sha256Init(), K = tb.K, H = new Int32Array(tb.H);
++        var m = padMessage(b, true), dv = new DataView(m.buffer), w = new Int32Array(64);
++        for (var off = 0; off < m.length; off += 64) {
++            var t;
++            for (t = 0; t < 16; t++) w[t] = dv.getInt32(off + t * 4);
++            for (t = 16; t < 64; t++) {
++                var x = w[t - 15], y = w[t - 2];
++                var s0 = ((x >>> 7) | (x << 25)) ^ ((x >>> 18) | (x << 14)) ^ (x >>> 3);
++                var s1 = ((y >>> 17) | (y << 15)) ^ ((y >>> 19) | (y << 13)) ^ (y >>> 10);
++                w[t] = (w[t - 16] + s0 + w[t - 7] + s1) | 0;
++            }
++            var a = H[0], bb = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
++            for (t = 0; t < 64; t++) {
++                var S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
++                var ch = (e & f) ^ (~e & g);
++                var t1 = (h + S1 + ch + K[t] + w[t]) | 0;
++                var S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
++                var maj = (a & bb) ^ (a & c) ^ (bb & c);
++                var t2 = (S0 + maj) | 0;
++                h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = bb; bb = a; a = (t1 + t2) | 0;
++            }
++            H[0] = (H[0] + a) | 0; H[1] = (H[1] + bb) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;
++            H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
++        }
++        var out = Buffer.alloc(32), od = new DataView(out.buffer, out.byteOffset, 32);
++        for (var i = 0; i < 8; i++) od.setInt32(i * 4, H[i]);
++        return out;
++    }
++
++    var HASHES = { md5: { fn: md5, block: 64 }, sha1: { fn: sha1, block: 64 }, sha256: { fn: sha256, block: 64 } };
++
++    function hashSpec(name) {
++        var key = String(name).toLowerCase().replace("-", "");
++        if (!HASHES[key]) throw new Error("Digest method not supported");
++        return HASHES[key];
++    }
++
++    function Hash(name) {
++        this._spec = hashSpec(name);
++        this._chunks = [];
++    }
++    Hash.prototype.update = function(data, enc) {
++        this._chunks.push(typeof data === "string" ? Buffer.from(data, enc) : Buffer.from(data));
++        return this;
++    };
++    Hash.prototype.copy = function() {
++        var h = Object.create(Hash.prototype);
++        h._spec = this._spec;
++        h._chunks = this._chunks.slice();
++        return h;
++    };
++    Hash.prototype.digest = function(enc) {
++        var out = this._spec.fn(Buffer.concat(this._chunks));
++        return enc && enc !== "buffer" ? out.toString(enc) : out;
++    };
++
++    function Hmac(name, key) {
++        var spec = hashSpec(name);
++        var k = typeof key === "string" ? Buffer.from(key) : Buffer.from(key);
++        if (k.length > spec.block) k = spec.fn(k);
++        var pad = Buffer.alloc(spec.block);
++        pad.set(k);
++        var ipad = Buffer.alloc(spec.block), opad = Buffer.alloc(spec.block);
++        for (var i = 0; i < spec.block; i++) { ipad[i] = pad[i] ^ 0x36; opad[i] = pad[i] ^ 0x5c; }
++        this._spec = spec;
++        this._opad = opad;
++        this._chunks = [ipad];
++    }
++    Hmac.prototype.update = Hash.prototype.update;
++    Hmac.prototype.digest = function(enc) {
++        var inner = this._spec.fn(Buffer.concat(this._chunks));
++        var out = this._spec.fn(Buffer.concat([this._opad, inner]));
++        return enc && enc !== "buffer" ? out.toString(enc) : out;
++    };
++
++    /* ------------------------------------------------------------------ crypto (random numbers, hashes) */
 +
 +    var crypto = {
 +        randomBytes: function(n, cb) {
@@ -7574,8 +7799,9 @@ index 0000000..70196be
 +            for (var i = 0; i < arr.length; i++) arr[i] = (Math.random() * 256) | 0;
 +            return arr;
 +        },
-+        createHash: unavailable("crypto.createHash"),
-+        createHmac: unavailable("crypto.createHmac"),
++        createHash: function(name) { return new Hash(name); },
++        createHmac: function(name, key) { return new Hmac(name, key); },
++        getHashes: function() { return Object.keys(HASHES); },
 +        createCipheriv: unavailable("crypto.createCipheriv"),
 +        createDecipheriv: unavailable("crypto.createDecipheriv")
 +    };
@@ -7608,7 +7834,13 @@ index 0000000..70196be
 +    if (!proc.argv) proc.argv = [];
 +    if (!proc.env) proc.env = {};
 +    if (proc.platform === undefined) proc.platform = "linux";
-+    if (typeof proc.cwd !== "function") proc.cwd = function() { return gameRoot; };
++    proc.cwd = function() { return pkgRoot || gameRoot; };
++    /* Windows variables games build file paths from (log folders, saves): a folder next to the game */
++    var appData = gameRoot + "/appdata"; /* inside the game folder: the native file functions reach no further */
++    ["APPDATA", "LOCALAPPDATA", "USERPROFILE", "HOME", "TEMP", "TMP"].forEach(function(k) {
++        if (proc.env[k] === undefined) proc.env[k] = k === "TEMP" || k === "TMP" ? appData + "/tmp" : appData;
++    });
++    if (proc.env.USERNAME === undefined) proc.env.USERNAME = "Player";
 +    proc.chdir = proc.chdir || function() {};
 +    proc.umask = proc.umask || function() { return 18; };
 +    proc.emitWarning = proc.emitWarning || function(w) { console.warn("process warning: " + w); };
@@ -7781,10 +8013,18 @@ index 0000000..70196be
 +        name = String(name);
 +        var bare = name.indexOf("node:") === 0 ? name.substring(5) : name;
 +        if (Object.prototype.hasOwnProperty.call(builtins, bare)) return builtins[bare];
-+        /* Steam (greenworks) and nw.gui have their own stand-ins further down the chain */
-+        if (!/greenworks/i.test(bare) && bare !== "nw.gui") {
++        /* nw.gui has its own stand-in further down the chain */
++        if (bare !== "nw.gui") {
 +            var file = resolveModule(bare, fromDir);
-+            if (file) return loadModule(file);
++            if (/greenworks/i.test(bare)) {
++                /* A game may ship its own plain-JS greenworks module (for example a build without Steam); that one is
++                   used. The native Windows module (.node) cannot be loaded here, so then the Steam stand-in answers. */
++                if (file && /\.js$/i.test(file)) {
++                    try { return loadModule(file); } catch (e) { /* fall back to the stand-in */ }
++                }
++            } else if (file) {
++                return loadModule(file);
++            }
 +        }
 +        return previousRequire(name);
 +    }
@@ -7971,9 +8211,18 @@ index 0ad7a94..8a9276f 100644
              var bt = tex.baseTexture;
              var glTex = bt._glTexture || 0;
 diff --git a/src/shims/plugin_compat.js b/src/shims/plugin_compat.js
-index dc5e4dd..440549d 100644
+index dc5e4dd..4213f13 100644
 --- a/src/shims/plugin_compat.js
 +++ b/src/shims/plugin_compat.js
+@@ -183,7 +183,7 @@
+     if (typeof globalThis.require === "function") {
+         var _origRequire = globalThis.require;
+         globalThis.require = function(moduleName) {
+-            if (moduleName === "./greenworks" || moduleName === "greenworks") {
++            if (/greenworks/i.test(String(moduleName))) { /* "greenworks", "./greenworks", "./greenworks/greenworks", ... */
+                 var steamId = {
+                     screenName: "Player", steamId: "0", accountId: 0, staticAccountId: "0",
+                     isIndividualAccount: true, level: 0, getPersonaName: function() { return "Player"; }
 @@ -422,17 +422,60 @@
         through RegExp.prototype.exec, so wrapping it is sufficient. */
  
