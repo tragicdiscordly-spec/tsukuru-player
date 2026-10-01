@@ -17,10 +17,11 @@ It does **not** contain any games, and it does not jailbreak your console. You n
 
 - A **jailbroken PS5** (tested on firmware **13.60**), with the ELF loader running (port 9021).
 - The **web launcher** and **FTP server** payloads (`websrv`, `ftpsrv`) started on the console. Most payload menus have them.
-- A **USB stick** (exFAT or FAT32) with some free space.
+- A **USB stick** (exFAT or FAT32) with some free space. (A PC can also copy the bundle over FTP; the stick is simply the easiest way.)
 - The **Tsukuru Player bundle**: a folder called `tsukuru-player` (see *Get the bundle* below).
 - **Your own RPG Maker games.**
-- A **phone or PC on the same network** as the console, for the first install only.
+- **Something to open the install page with, once.** Easiest is a **phone or PC on the same network** as the console.
+  You can also use the **PS5's own web browser**, if it lets you type an address (see step 4).
 
 ## Get the bundle
 
@@ -36,6 +37,9 @@ yourself: see [docs/BUILDING.md](docs/BUILDING.md).
 4. **On your phone or PC**, open this address in a browser (use *your* console's address):
 
    `http://192.168.1.222:8080/fs/mnt/usb0/tsukuru-player/install.html`
+
+   **No phone or PC?** In the PS5's own browser use `127.0.0.1` instead of the console's address:
+   `http://127.0.0.1:8080/fs/mnt/usb0/tsukuru-player/install.html`
 
    If the page says "not found", the stick is not `usb0`: try `usb1`, `usb2`, and so on.
 5. **Tap Install.** Notifications in the corner of the TV show the progress (a minute or two). When it says
