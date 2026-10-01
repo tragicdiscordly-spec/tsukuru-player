@@ -42,10 +42,10 @@ index 0000000..4132e86
 +};
 diff --git a/cmake/ps5.cmake b/cmake/ps5.cmake
 new file mode 100644
-index 0000000..c02f52d
+index 0000000..7fa2c82
 --- /dev/null
 +++ b/cmake/ps5.cmake
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,157 @@
 +# SPDX-License-Identifier: GPL-3.0-or-later
 +# Copyright (c) 2026 the PS5 port contributors
 +# Outsider for the PlayStation 5, built with the ps5-payload-sdk (see scripts/build-outsider.sh of the
@@ -196,9 +196,69 @@ index 0000000..c02f52d
 +# The version script keeps our gl* wrappers (gl_ps5.c) out of the exported symbols, see ps5-exports.map.
 +target_link_options(outsider PRIVATE -Wl,--export-dynamic
 +    -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cmake/ps5-exports.map ${RMMZ_PS5_WRAP})
++# WebP pictures (some games name them .png); libwebp comes from the same prefix as QuickJS
++if(EXISTS ${RMMZ_PS5_PREFIX}/lib/libwebp.a AND EXISTS ${RMMZ_PS5_PREFIX}/include/webp/decode.h)
++    target_compile_definitions(outsider PRIVATE RMMZ_HAVE_WEBP)
++    target_include_directories(outsider PRIVATE ${RMMZ_PS5_PREFIX}/include)
++    target_link_libraries(outsider PRIVATE ${RMMZ_PS5_PREFIX}/lib/libwebp.a)
++endif()
 +target_link_libraries(outsider PRIVATE qjs soloud ${RMMZ_PS5_SDL_LIBS} m pthread)
+diff --git a/src/audio/audio_engine.cpp b/src/audio/audio_engine.cpp
+index 49068aa..32cd251 100644
+--- a/src/audio/audio_engine.cpp
++++ b/src/audio/audio_engine.cpp
+@@ -412,6 +412,9 @@ extern "C" AudioSourceHandle audio_load_stream(const char *path)
+     return h;
+ }
+ 
++/* stb_vorbis is compiled into libsoloud; only this one function is needed here. */
++extern "C" int stb_vorbis_decode_memory(const unsigned char *mem, int len, int *channels, int *sample_rate, short **output);
++
+ extern "C" AudioSourceHandle audio_load_from_memory(const uint8_t *data, uint32_t size)
+ {
+     if (s_disabled) return 1;
+@@ -427,11 +430,34 @@ extern "C" AudioSourceHandle audio_load_from_memory(const uint8_t *data, uint32_
+         return AUDIO_SOURCE_INVALID;
+     }
+ 
+-    SoLoud::result res = e->wav->loadMem(
+-        const_cast<unsigned char *>(data), size,
+-        true,  /* copy */
+-        true   /* take ownership of the copy */
+-    );
++    SoLoud::result res = SoLoud::UNKNOWN_ERROR;
++    if (size > 4 && memcmp(data, "OggS", 4) == 0) {
++        /* SoLoud sizes its buffer from the length the Ogg file claims and then writes whatever the decoder returns;
++           files whose claimed length is too short (some encoders, or files cut by a game's own tools) overflowed
++           the heap and took the whole program down. Decode the file completely here and hand over the result. */
++        int channels = 0, rate = 0;
++        short *pcm = NULL;
++        int frames = stb_vorbis_decode_memory(data, (int)size, &channels, &rate, &pcm);
++        if (frames > 0 && channels > 0 && pcm) {
++            int use = channels > 8 ? 8 : channels;
++            float *planar = new (std::nothrow) float[(size_t)frames * use];
++            if (planar) {
++                for (int c = 0; c < use; c++)
++                    for (int i = 0; i < frames; i++)
++                        planar[(size_t)c * frames + i] = pcm[(size_t)i * channels + c] * (1.0f / 32768.0f);
++                res = e->wav->loadRawWave(planar, (unsigned int)((size_t)frames * use), (float)rate, (unsigned int)use,
++                                          false, true);
++                if (res != SoLoud::SO_NO_ERROR) delete[] planar;
++            }
++        }
++        free(pcm);
++    } else {
++        res = e->wav->loadMem(
++            const_cast<unsigned char *>(data), size,
++            true,  /* copy */
++            true   /* take ownership of the copy */
++        );
++    }
+     if (res != SoLoud::SO_NO_ERROR) {
+         fprintf(stderr, "audio_load_from_memory: failed (error %d)\n", res);
+         delete e->wav;
 diff --git a/src/bindings/bind_canvas2d.c b/src/bindings/bind_canvas2d.c
-index e431815..9fd305c 100644
+index e431815..3d71b77 100644
 --- a/src/bindings/bind_canvas2d.c
 +++ b/src/bindings/bind_canvas2d.c
 @@ -3,6 +3,7 @@
@@ -605,7 +665,31 @@ index e431815..9fd305c 100644
      (void)this_val;
      if (argc < 2)
          return JS_ThrowTypeError(ctx, "measureText requires handle and text");
-@@ -579,6 +772,8 @@ static JSValue js_c2d_measure_text(JSContext *ctx, JSValueConst this_val,
+@@ -574,11 +767,32 @@ static JSValue js_c2d_measure_text(JSContext *ctx, JSValueConst this_val,
+     return JS_NewFloat64(ctx, (double)w);
+ }
+ 
++/* measureTextBounds(handle, text) -> [leftReach, right, ascent, descent] */
++static JSValue js_c2d_measure_text_bounds(JSContext *ctx, JSValueConst this_val,
++                                          int argc, JSValueConst *argv)
++{
++    (void)this_val;
++    if (argc < 2)
++        return JS_ThrowTypeError(ctx, "measureTextBounds requires handle and text");
++    uint32_t handle;
++    if (JS_ToUint32(ctx, &handle, argv[0])) return JS_EXCEPTION;
++    const char *text = JS_ToCString(ctx, argv[1]);
++    if (!text) return JS_EXCEPTION;
++    float b[4];
++    canvas2d_measure_text_bounds(handle, text, b);
++    JS_FreeCString(ctx, text);
++    JSValue arr = JS_NewArray(ctx);
++    for (int i = 0; i < 4; i++) JS_SetPropertyUint32(ctx, arr, (uint32_t)i, JS_NewFloat64(ctx, (double)b[i]));
++    return arr;
++}
++
+ /* Registration */
+ 
  static const JSCFunctionListEntry js_c2d_funcs[] = {
      JS_CFUNC_DEF("create",           2, js_c2d_create),
      JS_CFUNC_DEF("destroy",          1, js_c2d_destroy),
@@ -614,7 +698,7 @@ index e431815..9fd305c 100644
      JS_CFUNC_DEF("resize",           3, js_c2d_resize),
      JS_CFUNC_DEF("getSize",          1, js_c2d_get_size),
      JS_CFUNC_DEF("setFillColor",     5, js_c2d_set_fill_color),
-@@ -591,6 +786,8 @@ static const JSCFunctionListEntry js_c2d_funcs[] = {
+@@ -591,6 +805,8 @@ static const JSCFunctionListEntry js_c2d_funcs[] = {
      JS_CFUNC_DEF("save",             1, js_c2d_save),
      JS_CFUNC_DEF("restore",          1, js_c2d_restore),
      JS_CFUNC_DEF("fillRect",         5, js_c2d_fill_rect),
@@ -623,7 +707,12 @@ index e431815..9fd305c 100644
      JS_CFUNC_DEF("clearRect",        5, js_c2d_clear_rect),
      JS_CFUNC_DEF("strokeRect",       5, js_c2d_stroke_rect),
      JS_CFUNC_DEF("drawImage",       12, js_c2d_draw_image),
-@@ -608,6 +805,13 @@ static const JSCFunctionListEntry js_c2d_funcs[] = {
+@@ -604,10 +820,18 @@ static const JSCFunctionListEntry js_c2d_funcs[] = {
+     JS_CFUNC_DEF("fillText",         4, js_c2d_fill_text),
+     JS_CFUNC_DEF("strokeText",       4, js_c2d_stroke_text),
+     JS_CFUNC_DEF("measureText",      2, js_c2d_measure_text),
++    JS_CFUNC_DEF("measureTextBounds", 2, js_c2d_measure_text_bounds),
+ };
  
  void bind_canvas2d_register(JSContext *ctx)
  {
@@ -1556,7 +1645,7 @@ index 33c7209..e031b73 100644
          if (!JS_IsUndefined(stack)) {
              const char *stack_str = JS_ToCString(ctx, stack);
 diff --git a/src/engine/game_loop.c b/src/engine/game_loop.c
-index 398d86d..40a40ed 100644
+index 398d86d..b420b0c 100644
 --- a/src/engine/game_loop.c
 +++ b/src/engine/game_loop.c
 @@ -3,6 +3,7 @@
@@ -1567,7 +1656,7 @@ index 398d86d..40a40ed 100644
  #include "engine/game_loop.h"
  #include "engine/error_handler.h"
  #include "audio/audio_engine.h"
-@@ -444,6 +445,110 @@ void game_loop_request_stop(GameLoop *loop)
+@@ -444,6 +445,119 @@ void game_loop_request_stop(GameLoop *loop)
      if (loop) loop->running = false;
  }
  
@@ -1646,14 +1735,23 @@ index 398d86d..40a40ed 100644
 +        if (JS_IsException(v)) { JSValue e = JS_GetException(ctx); JS_FreeValue(ctx, e); }
 +        JS_FreeValue(ctx, v);
 +        if (!on_title) return;
-+        char go[256];
++        if (strcmp(spec, "title") == 0) {      /* RMMZ_AUTOSTART=title: only start the clock of RMMZ_AUTOSCRIPT */
++            error_handler_log(LOG_INFO, "autostart: title screen reached");
++            script_base = loop->total_frames;
++            state = 0;
++            return;
++        }
++        char go[512];
 +        int slot = strncmp(spec, "load", 4) == 0 ? (spec[4] == ':' ? atoi(spec + 5) : 0) : -1;
 +        if (slot >= 0)
 +            snprintf(go, sizeof go,
 +                     "(function(){ var go = function(){ $gameSystem.onAfterLoad(); SceneManager.goto(Scene_Map); };"
 +                     " var r = DataManager.loadGame(%d); if (r && typeof r.then === 'function') r.then(go); else if (r) go(); })(); 1", slot);
 +        else
-+            snprintf(go, sizeof go, "DataManager.setupNewGame(); SceneManager.goto(Scene_Map); 1");
++            snprintf(go, sizeof go,
++                     "(function(){ var s = SceneManager._scene;"
++                     " if (s && typeof s.commandNewGame === 'function') s.commandNewGame();"
++                     " else { DataManager.setupNewGame(); SceneManager.goto(Scene_Map); } })(); 1");
 +        JS_FreeValue(ctx, JS_Eval(ctx, go, strlen(go), "<autostart>", JS_EVAL_TYPE_GLOBAL));
 +        error_handler_log(LOG_INFO, slot >= 0 ? "autostart: loading save %d" : "autostart: new game started", slot);
 +        state = slot >= 0 ? 0 : 2;
@@ -1678,7 +1776,7 @@ index 398d86d..40a40ed 100644
  bool game_loop_step(GameLoop *loop)
  {
      if (!loop || !loop->running) return false;
-@@ -572,6 +677,8 @@ bool game_loop_step(GameLoop *loop)
+@@ -572,6 +686,8 @@ bool game_loop_step(GameLoop *loop)
  
      /* --- Debug frame limit: capture the final frame before it is swapped --- */
      loop->total_frames++;
@@ -1687,7 +1785,7 @@ index 398d86d..40a40ed 100644
      if (loop->max_frames > 0 && loop->total_frames >= loop->max_frames) {
          if (loop->screenshot_path) {
              write_screenshot(loop, loop->screenshot_path);
-@@ -608,6 +715,7 @@ bool game_loop_step(GameLoop *loop)
+@@ -608,6 +724,7 @@ bool game_loop_step(GameLoop *loop)
      /* --- Phase 5: Present --- */
      phase_start = phase_end;
  
@@ -1695,7 +1793,7 @@ index 398d86d..40a40ed 100644
      {
          /* The frame was drawn into an offscreen surface; putting it on screen
             is the renderer's job, and the window swap follows it. */
-@@ -616,11 +724,21 @@ bool game_loop_step(GameLoop *loop)
+@@ -616,11 +733,21 @@ bool game_loop_step(GameLoop *loop)
              int ww = 0, wh = 0;
              platform_get_window_size(loop->platform, &ww, &wh);
              renderer_set_output_size(r, ww, wh);
@@ -1719,7 +1817,7 @@ index 398d86d..40a40ed 100644
  
      phase_end = SDL_GetPerformanceCounter();
      loop->stats.swap_ms = ticks_to_ms(loop, phase_end - phase_start);
-@@ -634,16 +752,17 @@ bool game_loop_step(GameLoop *loop)
+@@ -634,16 +761,17 @@ bool game_loop_step(GameLoop *loop)
          loop->perf_acc.jobs_ms   += loop->stats.jobs_ms;
          loop->perf_acc.raf_ms    += loop->stats.raf_ms;
          loop->perf_acc.swap_ms   += loop->stats.swap_ms;
@@ -2301,7 +2399,7 @@ index 0000000..9457b4a
 +
 +#endif /* RMMZ_JS_POOL_ALLOC_H */
 diff --git a/src/engine/script_loader.c b/src/engine/script_loader.c
-index 0b731d2..b614a5b 100644
+index 0b731d2..3f284a7 100644
 --- a/src/engine/script_loader.c
 +++ b/src/engine/script_loader.c
 @@ -254,6 +254,7 @@ static const char *SHIM_FILES[] = {
@@ -2352,7 +2450,52 @@ index 0b731d2..b614a5b 100644
      NULL
  };
  
-@@ -325,9 +355,24 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -315,6 +345,44 @@ static const char *LIB_SCRIPTS[] = {
+     NULL
+ };
+ 
++/* RPG Maker MZ's js/main.js declares `class Main` and then starts the game in its last lines ("const main = new Main();
++   main.run();"). In a browser the plugins load after that class exists and some of them patch Main.prototype, so the
++   class has to be defined before the plugins run, while the starting lines still have to wait until everything is loaded.
++   Evaluates the part before the starting lines now and returns the rest (malloc'ed) for later; NULL when main.js has
++   another shape (MV's, or a changed one), in which case it is simply evaluated as a whole later. */
++static char *preload_main_class(JSEngine *engine, const char *game_dir)
++{
++    char *main_path = join_path(game_dir, "js/main.js");
++    if (!main_path || !file_io_exists(main_path)) {
++        free(main_path);
++        return NULL;
++    }
++    size_t size = 0;
++    char *text = file_io_read_text(main_path, &size);
++    char *tail = NULL;
++    if (text && strstr(text, "class Main")) {
++        char *start = NULL;
++        for (char *q = strstr(text, "new Main("); q; q = strstr(q + 1, "new Main(")) start = q;
++        if (start) {
++            while (start > text && start[-1] != '\n') start--;
++            size_t tail_len = strlen(start);
++            /* only a few starting lines may follow the class */
++            if (tail_len < 400 && !strstr(start, "class ") && !strstr(start, "function ")) {
++                tail = strdup(start);
++                *start = '\0';
++                js_engine_eval(engine, "__dom_setCurrentScript('js/main.js');", "<set-main-script>");
++                if (!js_engine_eval(engine, text, main_path))
++                    fprintf(stderr, "script_loader: warning: errors during main.js (class part)\n");
++                js_engine_execute_pending_jobs(engine);
++                js_engine_eval(engine, "__dom_setCurrentScript(null);", "<clear-main-script>");
++            }
++        }
++    }
++    free(text);
++    free(main_path);
++    return tail;
++}
++
+ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *game_dir)
+ {
+     if (!engine || !shim_dir || !game_dir) return false;
+@@ -325,9 +393,24 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
      }
      printf("script_loader: shims loaded\n");
  
@@ -2379,7 +2522,7 @@ index 0b731d2..b614a5b 100644
          if (!path) return false;
  
          if (file_io_exists(path)) {
-@@ -336,7 +381,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -336,7 +419,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
                  fprintf(stderr, "script_loader: warning: failed to load lib: %s\n", path);
              }
              js_engine_execute_pending_jobs(engine);
@@ -2388,7 +2531,7 @@ index 0b731d2..b614a5b 100644
          } else {
              fprintf(stderr, "script_loader: warning: lib not found: %s\n", path);
          }
-@@ -345,8 +390,8 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -345,8 +428,8 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
      printf("script_loader: libraries loaded\n");
  
      /* Step 3: Load RPG Maker MZ core scripts */
@@ -2399,7 +2542,7 @@ index 0b731d2..b614a5b 100644
          if (!path) return false;
  
          if (file_io_exists(path)) {
-@@ -354,10 +399,10 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -354,10 +437,10 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
              if (!ok) {
                  /* Non-fatal: core scripts may reference PIXI features the shim lacks. */
                  fprintf(stderr, "script_loader: note: errors during %s (may be expected for PIXI deps)\n",
@@ -2412,7 +2555,16 @@ index 0b731d2..b614a5b 100644
          } else {
              fprintf(stderr, "script_loader: warning: core script not found: %s\n", path);
          }
-@@ -447,7 +492,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -365,6 +448,8 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+     }
+     printf("script_loader: core scripts loaded\n");
+ 
++    char *main_tail = mv ? NULL : preload_main_class(engine, game_dir);
++
+     /* Step 4: Load enabled plugins */
+     char *plugins_path = join_path(game_dir, "js/plugins.js");
+     if (plugins_path && file_io_exists(plugins_path)) {
+@@ -447,7 +532,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
                      /* Logged before eval so a native crash inside a plugin
                         leaves its name as the last line of the log. */
                      printf("script_loader: plugin %s\n", plugins->entries[i].name);
@@ -2421,7 +2573,7 @@ index 0b731d2..b614a5b 100644
                      if (!ok) {
                          fprintf(stderr, "script_loader: warning: plugin error: %s\n",
                                  plugins->entries[i].name);
-@@ -470,6 +515,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -470,6 +555,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
      /* Step 4b: Post-core shims go after plugins so they win over plugin
         patches to the same engine classes (e.g. Tilemap.Layer.prototype.render). */
      for (int i = 0; POST_CORE_SHIMS[i] != NULL; i++) {
@@ -2429,7 +2581,7 @@ index 0b731d2..b614a5b 100644
          char *path = join_path(shim_dir, POST_CORE_SHIMS[i]);
          if (!path) return false;
  
-@@ -480,6 +526,14 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -480,14 +566,22 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
          js_engine_execute_pending_jobs(engine);
          free(path);
      }
@@ -2443,7 +2595,25 @@ index 0b731d2..b614a5b 100644
 +    }
      printf("script_loader: post-core shims loaded\n");
  
-     /* Step 5: Load main.js */
+-    /* Step 5: Load main.js */
++    /* Step 5: Load main.js (for MZ the class part ran before the plugins, only the starting lines are left) */
+     char *main_path = join_path(game_dir, "js/main.js");
+     if (main_path && file_io_exists(main_path)) {
+         js_engine_eval(engine, "__dom_setCurrentScript('js/main.js');",
+                        "<set-main-script>");
+-        bool ok = js_engine_eval_file(engine, main_path);
++        bool ok = main_tail ? js_engine_eval(engine, main_tail, main_path) : js_engine_eval_file(engine, main_path);
+         if (!ok) {
+             fprintf(stderr, "script_loader: warning: errors during main.js\n");
+         }
+@@ -497,6 +591,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+         printf("script_loader: main.js loaded\n");
+     }
+     free(main_path);
++    free(main_tail);
+ 
+     /* Step 6: Start the game. main.js waits for DOM script-load callbacks that
+        never fire here (scripts are pre-loaded), so run PluginManager.setup and
 diff --git a/src/io/file_io.c b/src/io/file_io.c
 index 11c14c7..76903b2 100644
 --- a/src/io/file_io.c
@@ -2690,10 +2860,56 @@ index 11c14c7..76903b2 100644
  
  bool file_io_is_directory(const char *path)
 diff --git a/src/main.c b/src/main.c
-index d50b302..1ac075b 100644
+index d50b302..961a5dd 100644
 --- a/src/main.c
 +++ b/src/main.c
-@@ -96,6 +96,7 @@ int main(int argc, char *argv[])
+@@ -80,7 +80,45 @@ static bool find_dir_next_to_exe(const char *name, char *out, size_t out_size)
+     return file_io_is_directory(out);
+ }
+ 
++#ifdef __SCE__
++#include <pthread.h>
++/* The console starts the program's main thread with a 2 MB stack. Mesa's shader compiler and LLVM (software GL), and
++   deep JavaScript recursion in big plugin sets, need much more: Fear & Hunger 2 died with a stack overflow while its
++   plugins were loading. The whole program therefore runs on a thread with a big stack; main() only waits for it. */
++#define PS5_MAIN_STACK_SIZE (128u * 1024u * 1024u)
++
++static int real_main(int argc, char *argv[]);
++
++struct main_args {
++    int argc;
++    char **argv;
++    int result;
++};
++
++static void *main_thread(void *p)
++{
++    struct main_args *a = (struct main_args *)p;
++    a->result = real_main(a->argc, a->argv);
++    return NULL;
++}
++
+ int main(int argc, char *argv[])
++{
++    struct main_args a = { argc, argv, 1 };
++    pthread_attr_t attr;
++    pthread_t thread;
++    if (pthread_attr_init(&attr) == 0 && pthread_attr_setstacksize(&attr, PS5_MAIN_STACK_SIZE) == 0 &&
++        pthread_create(&thread, &attr, main_thread, &a) == 0) {
++        pthread_join(thread, NULL);
++        return a.result;
++    }
++    return real_main(argc, argv);   /* could not start the big thread: carry on with the small stack */
++}
++
++static int real_main(int argc, char *argv[])
++#else
++int main(int argc, char *argv[])
++#endif
+ {
+     /* Android: printf output is lost unless routed to logcat. No-op elsewhere. */
+     android_support_init_logging();
+@@ -96,6 +134,7 @@ int main(int argc, char *argv[])
      const char *screenshot_path = NULL;
      const char *probe_expr = NULL;
      int watchdog_ms = 0;
@@ -2701,7 +2917,7 @@ index d50b302..1ac075b 100644
      int perf_every = 0;
      bool control_mode = false;
  
-@@ -120,6 +121,9 @@ int main(int argc, char *argv[])
+@@ -120,6 +159,9 @@ int main(int argc, char *argv[])
              /* Debug: interrupt JS that blocks a frame or eval for longer than
                 this many milliseconds, logging where it was. */
              watchdog_ms = atoi(argv[++i]);
@@ -2711,7 +2927,7 @@ index d50b302..1ac075b 100644
          } else if (strcmp(argv[i], "--resolution") == 0 && i + 1 < argc) {
              if (sscanf(argv[++i], "%dx%d", &win_w, &win_h) != 2) {
                  fatal_error("Invalid resolution format, expected WIDTHxHEIGHT");
-@@ -259,6 +263,11 @@ int main(int argc, char *argv[])
+@@ -259,6 +301,11 @@ int main(int argc, char *argv[])
          error_handler_log(LOG_INFO, "Script watchdog enabled: %d ms", watchdog_ms);
      }
  
@@ -2723,7 +2939,7 @@ index d50b302..1ac075b 100644
      bind_io_register(js_engine_get_context(js));
  
      /* Initialize image loader (GL enabled since we have a context). */
-@@ -354,10 +363,13 @@ int main(int argc, char *argv[])
+@@ -354,10 +401,13 @@ int main(int argc, char *argv[])
      if (perf_every > 0) {
          game_loop_set_perf_report(loop, perf_every);
      }
@@ -4344,7 +4560,7 @@ index 0000000..7e5cb26
 + * Copyright (c) 2026 the PS5 port contributors */
 +#include <SDL2/SDL_opengl.h>
 diff --git a/src/rendering/canvas2d.c b/src/rendering/canvas2d.c
-index 9e47eca..5e09703 100644
+index 9e47eca..abc3743 100644
 --- a/src/rendering/canvas2d.c
 +++ b/src/rendering/canvas2d.c
 @@ -80,20 +80,21 @@ typedef struct {
@@ -4775,7 +4991,7 @@ index 9e47eca..5e09703 100644
 +                packed[i] = DIV255(fast[i].pr + 127) | (DIV255(fast[i].pg + 127) << 8) |
 +                            (DIV255(fast[i].pb + 127) << 16) | (255u << 24);
 +            }
-         }
++        }
 +        g->fast = fast;
 +        g->fast_packed = packed;
 +        g->fast_bins = bins;
@@ -5040,8 +5256,8 @@ index 9e47eca..5e09703 100644
 +                    fill_span(ctx->pixels + ((size_t)y * ctx->width + xa) * 4, xb - xa, fr, fg, fb, fa, ga, comp);
 +                }
 +            }
-+        }
-+    }
+         }
+     }
 +    free(xs);
 +}
 +
@@ -5116,7 +5332,7 @@ index 9e47eca..5e09703 100644
 +    if (gradient_kind < 0 || n <= 0) {
 +        fill_path_impl(ctx, pts, counts, nsub, has_clip, clip_x, clip_y, clip_w, clip_h, NULL);
 +        return;
-     }
++    }
 +    GradientPaint *g = malloc(sizeof(GradientPaint));
 +    if (!g) return;
 +    gradient_init(g, gradient_kind == 1, p0, p1, p2, p3, offsets, rgba, n);
@@ -5126,8 +5342,58 @@ index 9e47eca..5e09703 100644
  }
  
  void canvas2d_clear_rect(Canvas2DHandle h, int x, int y, int w, int h2)
+@@ -891,6 +1562,49 @@ float canvas2d_measure_text(Canvas2DHandle h, const char *text)
+     return measure_text_internal(fe, ctx->state.font_size, text);
+ }
+ 
++/* Bounding box of the drawn glyphs of `text`, relative to the start of the text on the baseline: out[0] = how far it
++   reaches to the left of the start, out[1] = right edge, out[2] = ascent above the baseline, out[3] = descent below it
++   (the actualBoundingBox* values of measureText). Returns false when there is no font. */
++bool canvas2d_measure_text_bounds(Canvas2DHandle h, const char *text, float out[4])
++{
++    out[0] = out[1] = out[2] = out[3] = 0.0f;
++    Canvas2DCtx *ctx = find_ctx(h);
++    if (!ctx || !text) return false;
++
++    FontEntry *fe = find_font(ctx->state.font_name);
++    for (int i = 0; !fe && i < s_font_count; i++) {
++        if (s_fonts[i].valid) fe = &s_fonts[i];
++    }
++    if (!fe) return false;
++
++    float pen = 0.0f, min_x = 0.0f, max_x = 0.0f, ascent = 0.0f, descent = 0.0f;
++    bool any = false;
++    const char *p = text;
++    while (*p) {
++        int cp = utf8_next(&p);
++        GlyphRef g;
++        float adv = glyph_advance(fe, ctx->state.font_size, cp, utf8_peek(p), &g);
++        float scale = stbtt_ScaleForMappingEmToPixels(&g.fe->info, ctx->state.font_size);
++        int x0, y0, x1, y1;
++        stbtt_GetGlyphBitmapBox(&g.fe->info, g.glyph, scale, scale, &x0, &y0, &x1, &y1);
++        if (x1 > x0 && y1 > y0) {
++            if (!any || pen + x0 < min_x) min_x = pen + x0;
++            if (!any || pen + x1 > max_x) max_x = pen + x1;
++            if (-y0 > ascent) ascent = (float)-y0;
++            if (y1 > descent) descent = (float)y1;
++            any = true;
++        }
++        pen += adv;
++    }
++    if (any) {
++        out[0] = -min_x;
++        out[1] = max_x;
++        out[2] = ascent;
++        out[3] = descent;
++    }
++    return true;
++}
++
+ /* Browser text rasterizers (Skia/DirectWrite) boost partial coverage so
+    glyphs read heavier than linear anti-aliasing; without it, text here is
+    visibly lighter than in the NW.js player. Coverage is mapped through
 diff --git a/src/rendering/canvas2d.h b/src/rendering/canvas2d.h
-index 8ea38e1..f57bbf7 100644
+index 8ea38e1..8db8f43 100644
 --- a/src/rendering/canvas2d.h
 +++ b/src/rendering/canvas2d.h
 @@ -92,6 +92,22 @@ void canvas2d_restore(Canvas2DHandle h);
@@ -5153,7 +5419,12 @@ index 8ea38e1..f57bbf7 100644
  /* Clear a rectangle to transparent black. */
  void canvas2d_clear_rect(Canvas2DHandle h, int x, int y, int w, int h2);
  
-@@ -136,4 +152,11 @@ float canvas2d_measure_text(Canvas2DHandle h, const char *text);
+@@ -132,8 +148,16 @@ void canvas2d_stroke_text(Canvas2DHandle h, const char *text, float x, float y);
+ 
+ /* Measure the width of `text` in pixels using the current font. */
+ float canvas2d_measure_text(Canvas2DHandle h, const char *text);
++bool canvas2d_measure_text_bounds(Canvas2DHandle h, const char *text, float out[4]);
+ 
  /* Return the number of active Canvas2D contexts. */
  size_t canvas2d_context_count(void);
  
@@ -5222,10 +5493,20 @@ index 0000000..6f13adf
 +GL_TRAMPOLINE_V(glScissor, (GLint x, GLint y, GLsizei width, GLsizei height), (x, y, width, height))
 +GL_TRAMPOLINE_V(glViewport, (GLint x, GLint y, GLsizei width, GLsizei height), (x, y, width, height))
 diff --git a/src/rendering/image_loader.c b/src/rendering/image_loader.c
-index a58b2a0..1129f8f 100644
+index a58b2a0..c4c461e 100644
 --- a/src/rendering/image_loader.c
 +++ b/src/rendering/image_loader.c
-@@ -85,7 +85,7 @@ uint32_t image_upload_rgba_texture(const uint8_t *rgba, int width, int height)
+@@ -4,6 +4,9 @@
+  */
+ 
+ #include "rendering/image_loader.h"
++#ifdef RMMZ_HAVE_WEBP
++#include <webp/decode.h>
++#endif
+ #include "io/file_io.h"
+ 
+ #include <stdio.h>
+@@ -85,7 +88,7 @@ uint32_t image_upload_rgba_texture(const uint8_t *rgba, int width, int height)
  
  static void delete_gl_texture(uint32_t tex)
  {
@@ -5234,6 +5515,51 @@ index a58b2a0..1129f8f 100644
  }
  
  static CacheEntry *cache_insert(const char *key, uint8_t *pixels,
+@@ -167,6 +170,20 @@ void image_loader_shutdown(void)
+     image_cache_clear();
+ }
+ 
++/* Decodes PNG/JPEG/GIF/BMP (stb_image) and, when libwebp is built in, WebP. Some games ship WebP pictures under .png
++   names (the browser engine recognises the content, not the name). The result is RGBA, released with free(). */
++static uint8_t *decode_rgba(const uint8_t *data, size_t size, int *w, int *h)
++{
++#ifdef RMMZ_HAVE_WEBP
++    if (size > 12 && memcmp(data, "RIFF", 4) == 0 && memcmp(data + 8, "WEBP", 4) == 0) {
++        uint8_t *px = WebPDecodeRGBA(data, size, w, h);
++        if (px) return px;
++    }
++#endif
++    int channels;
++    return stbi_load_from_memory(data, (int)size, w, h, &channels, 4);
++}
++
+ ImageHandle image_load(const char *path)
+ {
+     if (!path) return IMAGE_HANDLE_INVALID;
+@@ -190,9 +207,8 @@ ImageHandle image_load(const char *path)
+         free(file_data);
+         return IMAGE_HANDLE_INVALID;
+     }
+-    int w, h, channels;
+-    uint8_t *pixels = stbi_load_from_memory(file_data, (int)file_size,
+-                                            &w, &h, &channels, 4);
++    int w, h;
++    uint8_t *pixels = decode_rgba(file_data, file_size, &w, &h);
+     free(file_data);
+ 
+     if (!pixels) {
+@@ -225,9 +241,8 @@ ImageHandle image_load_from_memory(const char *key,
+     if (!data || size == 0) return IMAGE_HANDLE_INVALID;
+     if (size > INT_MAX) return IMAGE_HANDLE_INVALID;
+ 
+-    int w, h, channels;
+-    uint8_t *pixels = stbi_load_from_memory(data, (int)size,
+-                                            &w, &h, &channels, 4);
++    int w, h;
++    uint8_t *pixels = decode_rgba(data, size, &w, &h);
+     if (!pixels) {
+         fprintf(stderr, "image_load_from_memory: failed to decode (%s)\n",
+                 stbi_failure_reason());
 diff --git a/src/rendering/present_cpu.c b/src/rendering/present_cpu.c
 new file mode 100755
 index 0000000..9002ad1
@@ -5701,7 +6027,7 @@ index 5315989..6369629 100644
                         float x, float y, float w, float h,
                         float u0, float v0, float u1, float v1,
 diff --git a/src/shims/canvas2d_shim.js b/src/shims/canvas2d_shim.js
-index 76f8bea..6ab93de 100644
+index 76f8bea..19c543f 100644
 --- a/src/shims/canvas2d_shim.js
 +++ b/src/shims/canvas2d_shim.js
 @@ -15,7 +15,7 @@
@@ -5781,7 +6107,35 @@ index 76f8bea..6ab93de 100644
          }
      };
  
-@@ -507,8 +540,12 @@
+@@ -392,8 +425,25 @@
+             if (m) fontSize = parseInt(m[1]);
+             return { width: (text || "").length * fontSize * 0.6 };
+         }
+-        var w = __native_canvas2d.measureText(this._handle, String(text || ""));
+-        return { width: w };
++        var str = String(text || "");
++        var w = __native_canvas2d.measureText(this._handle, str);
++        var res = { width: w };
++        var fm = /(\d+(?:\.\d+)?)px/.exec(this._font || "");
++        var handle = this._handle, size = fm ? parseFloat(fm[1]) : 10, cache = null;
++        /* actualBoundingBox*: the real glyph box, worked out only when a script asks for it (text-fitting plugins do) */
++        function bounds() {
++            if (!cache) cache = __native_canvas2d.measureTextBounds ? __native_canvas2d.measureTextBounds(handle, str) : [0, w, size * 0.8, size * 0.2];
++            return cache;
++        }
++        Object.defineProperty(res, "actualBoundingBoxLeft", { enumerable: true, get: function() { return bounds()[0]; } });
++        Object.defineProperty(res, "actualBoundingBoxRight", { enumerable: true, get: function() { return bounds()[1]; } });
++        Object.defineProperty(res, "actualBoundingBoxAscent", { enumerable: true, get: function() { return bounds()[2]; } });
++        Object.defineProperty(res, "actualBoundingBoxDescent", { enumerable: true, get: function() { return bounds()[3]; } });
++        res.fontBoundingBoxAscent = size * 0.88;
++        res.fontBoundingBoxDescent = size * 0.12;
++        res.emHeightAscent = size * 0.8;
++        res.emHeightDescent = size * 0.2;
++        return res;
+     };
+ 
+     CanvasRenderingContext2D.prototype.drawImage = function(source) {
+@@ -507,8 +557,12 @@
      }
  
      CanvasGradient.prototype.addColorStop = function(offset, color) {
@@ -5796,7 +6150,7 @@ index 76f8bea..6ab93de 100644
      };
  
      function _interpolateGradientColor(stops, t) {
-@@ -561,6 +598,22 @@
+@@ -561,6 +615,22 @@
          x = x | 0; y = y | 0; w = w | 0; h = h | 0;
          if (w <= 0 || h <= 0) return;
  
@@ -5819,7 +6173,7 @@ index 76f8bea..6ab93de 100644
          if (grad._radial) {
              var cx = grad._cx, cy = grad._cy;
              var r0 = grad._r0, r1 = grad._r1;
-@@ -779,8 +832,8 @@
+@@ -779,8 +849,8 @@
  
      CanvasRenderingContext2D.prototype.lineTo = function(x, y) {
          if (!this._pathCur) { this.moveTo(x, y); return; }
@@ -5830,7 +6184,7 @@ index 76f8bea..6ab93de 100644
          this._curPt = [x, y];
      };
  
-@@ -820,12 +873,24 @@
+@@ -820,12 +890,24 @@
              if (delta < -TWO_PI) delta = -TWO_PI;
          }
          var segs = Math.max(8, Math.min(96, Math.ceil(r * this._ctmScale() * 0.5 * Math.abs(delta) / Math.PI * 2)));
@@ -5860,7 +6214,7 @@ index 76f8bea..6ab93de 100644
      };
  
      CanvasRenderingContext2D.prototype.ellipse = function(x, y, rx, ry, rotation, sa, ea, ccw) {
-@@ -906,9 +971,53 @@
+@@ -906,9 +988,53 @@
          }
      };
  
@@ -5914,7 +6268,7 @@ index 76f8bea..6ab93de 100644
          if (this._fillStyle instanceof CanvasGradient) {
              this._rasterizePath(function(x, y, w) { self._fillGradientRect(x, y, w, 1); });
          } else {
-@@ -939,7 +1048,9 @@
+@@ -939,7 +1065,9 @@
          this._path = quads;
          var c = parseColor(this._strokeStyle);
          __native_canvas2d.setFillColor(h, c[0], c[1], c[2], c[3]);
@@ -5925,7 +6279,7 @@ index 76f8bea..6ab93de 100644
          this._path = saved;
          this._syncFillColor();
      };
-@@ -980,9 +1091,13 @@
+@@ -980,9 +1108,13 @@
              __native_canvas2d.destroy(this._handle);
          }
          this._handle = 0;
@@ -6033,7 +6387,7 @@ index 0000000..917011d
 +    };
 +})();
 diff --git a/src/shims/dom_overlay.js b/src/shims/dom_overlay.js
-index 625a120..acf9478 100644
+index 625a120..f9b0550 100644
 --- a/src/shims/dom_overlay.js
 +++ b/src/shims/dom_overlay.js
 @@ -317,12 +317,23 @@
@@ -6082,7 +6436,24 @@ index 625a120..acf9478 100644
          return false;
      }
  
-@@ -886,15 +902,20 @@
+@@ -538,6 +554,7 @@
+         var cs = computeStyle(el, rules);
+         var tag = el.tagName;
+         var f = fontOf(cs, inherited, scale);
++        if (el.id && /^errorprinter$/i.test(el.id)) f.color = "#ffffff";   /* the engines colour the message with <font> tags */
+         var pad = sides(cs, "padding", scale);
+         var mar = sides(cs, "margin", scale);
+         var bd = border(cs, scale);
+@@ -574,6 +591,8 @@
+         var textContentW = 0, textContentH = 0;
+         var text = textOf(el);
+         var hasElementChildren = el.children && el.children.some(function(c) { return c.nodeType === 1 && c.tagName !== "STYLE"; });
++        /* the engines' error printer holds the message text and the Retry button; the text is what matters */
++        if (hasElementChildren && text && el.id && /^errorprinter$/i.test(el.id)) hasElementChildren = false;
+         var lineHeight = f.size * 1.25;
+         if (tag === "INPUT" || tag === "SELECT") {
+             node.lines = [text];
+@@ -886,15 +905,20 @@
  
          var handle = ctx._handle;
          if (!handle) return;
@@ -6107,7 +6478,7 @@ index 625a120..acf9478 100644
          __native_renderer.setBlendMode(0);
          __native_renderer.drawQuad(overlay.texture, minX, minY, w, h, 0, 0, 1, 1, 0xFFFFFF, 1);
 diff --git a/src/shims/dom_shim.js b/src/shims/dom_shim.js
-index 07242e3..68553ff 100644
+index 07242e3..4f816cb 100644
 --- a/src/shims/dom_shim.js
 +++ b/src/shims/dom_shim.js
 @@ -419,7 +419,7 @@
@@ -6128,7 +6499,54 @@ index 07242e3..68553ff 100644
          }
          _runInsertedScript(newChild);
          return newChild;
-@@ -824,6 +824,7 @@
+@@ -530,8 +530,28 @@
+         return [];
+     };
+ 
++    /* HTMLCollection stand-in: an array with item() and namedItem() (MV does head.item(0).appendChild(style)) */
++    function _asCollection(arr) {
++        Object.defineProperty(arr, "item", { value: function(i) { return this[i] || null; }, enumerable: false });
++        Object.defineProperty(arr, "namedItem", {
++            value: function(n) {
++                for (var i = 0; i < this.length; i++) if (this[i].id === n || this[i].name === n) return this[i];
++                return null;
++            }, enumerable: false
++        });
++        return arr;
++    }
++
+     HTMLElement.prototype.getElementsByTagName = function(tag) {
+-        return [];
++        var upper = String(tag).toUpperCase(), out = [];
++        (function walk(el) {
++            var kids = el.children || [];
++            for (var i = 0; i < kids.length; i++) {
++                if (upper === "*" || kids[i].tagName === upper) out.push(kids[i]);
++                walk(kids[i]);
++            }
++        })(this);
++        return _asCollection(out);
+     };
+ 
+     HTMLElement.prototype.focus = function() {};
+@@ -567,8 +587,15 @@
+         set: function(v) { this._innerHTML = v; this.children = []; this.childNodes = []; }
+     });
+ 
++    /* textContent is the text of the markup set with innerHTML: <br> becomes a line break, other tags disappear
++       (the engines' error messages are set as HTML and must show up as readable text) */
+     Object.defineProperty(HTMLElement.prototype, "textContent", {
+-        get: function() { return this._innerHTML; },
++        get: function() {
++            var h = this._innerHTML;
++            if (typeof h !== "string" || h.indexOf("<") < 0) return h;
++            return h.replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]*>/g, "").replace(/&nbsp;/g, " ").replace(/&lt;/g, "<")
++                    .replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, "&");
++        },
+         set: function(v) { this._innerHTML = v; }
+     });
+ 
+@@ -824,6 +851,7 @@
                                      return;
                                  }
                                  self._imageHandle = result.handle;
@@ -6136,7 +6554,7 @@ index 07242e3..68553ff 100644
                                  self._glTextureId = result.glTexture || 0;
                                  self._naturalWidth = result.width;
                                  self._naturalHeight = result.height;
-@@ -860,6 +861,7 @@
+@@ -860,6 +888,7 @@
                              return;
                          }
                          self._imageHandle = info.handle;
@@ -6144,7 +6562,7 @@ index 07242e3..68553ff 100644
                          self._glTextureId = info.glTexture || 0;
                          self._naturalWidth = info.width;
                          self._naturalHeight = info.height;
-@@ -927,10 +929,13 @@
+@@ -927,10 +956,13 @@
         owning Bitmap is destroyed). Loads still in flight free on arrival. */
      HTMLImageElement.prototype._releaseNativeImage = function() {
          this._released = true;
@@ -6159,7 +6577,37 @@ index 07242e3..68553ff 100644
          this._imageHandle = 0;
          this._glTextureId = 0;
      };
-@@ -1267,6 +1272,8 @@
+@@ -1085,10 +1117,18 @@
+     };
+ 
+     /* Fallback when nothing can be played: report loadeddata, then ended. */
++    /* A movie that cannot be played "ends" quickly so cutscenes do not hang. A title-screen movie that the game
++       restarts every time it ends would then spin, so the same file ending again soon gets a longer and longer wait. */
++    var _skippedMovies = {};
++
+     HTMLVideoElement.prototype._finishAsync = function() {
+         if (!this._src || this._finishPending) return;
+         this._finishPending = true;
+         var self = this;
++        var now = Date.now();
++        var rec = _skippedMovies[this._src] || (_skippedMovies[this._src] = { last: 0, n: 0 });
++        rec.n = (now - rec.last < 15000) ? rec.n + 1 : 0;
++        var endDelay = Math.min(VIDEO_EVENT_DELAY_MS * Math.pow(2, rec.n), 20000);
+         setTimeout(function() {
+             if (!self._src || self._handle) { self._finishPending = false; return; }
+             self.paused = false;
+@@ -1097,8 +1137,9 @@
+                 self._finishPending = false;
+                 self.paused = true;
+                 self.ended = true;
++                rec.last = Date.now();
+                 self.dispatchEvent(new Event("ended"));
+-            }, VIDEO_EVENT_DELAY_MS);
++            }, endDelay);
+         }, VIDEO_EVENT_DELAY_MS);
+     };
+ 
+@@ -1267,6 +1308,8 @@
  
      var _title = "";
      var _allCreatedElements = [_refresherCanvas];
@@ -6168,7 +6616,7 @@ index 07242e3..68553ff 100644
  
      var document = {
          _listeners: {},
-@@ -1306,7 +1313,12 @@
+@@ -1306,7 +1349,12 @@
              } else {
                  el = new HTMLElement(tagName);
              }
@@ -6182,23 +6630,28 @@ index 07242e3..68553ff 100644
              return el;
          },
  
-@@ -1336,11 +1348,14 @@
+@@ -1335,12 +1383,18 @@
+         },
  
          getElementsByTagName: function(tag) {
-             var upper = tag.toUpperCase();
+-            var upper = tag.toUpperCase();
++            var upper = String(tag).toUpperCase();
++            if (upper === "HEAD") return _asCollection([_head]);
++            if (upper === "BODY") return _asCollection([_body]);
++            if (upper === "HTML") return _asCollection([_documentElement]);
 +            var cached = _tagCache[upper];
-+            if (cached && cached.gen === _elemGen) return cached.results.slice();
++            if (cached && cached.gen === _elemGen) return _asCollection(cached.results.slice());
              var results = [];
              for (var i = 0; i < _allCreatedElements.length; i++) {
                  if (_allCreatedElements[i].tagName === upper) results.push(_allCreatedElements[i]);
              }
 -            return results;
 +            _tagCache[upper] = { gen: _elemGen, results: results };
-+            return results.slice();
++            return _asCollection(results.slice());
          },
  
          getElementsByClassName: function(cls) {
-@@ -1664,7 +1679,7 @@
+@@ -1664,7 +1718,7 @@
      function _removeFromElementRegistry(el) {
          var idx = _allCreatedElements.indexOf(el);
          if (idx >= 0) {
@@ -6207,7 +6660,7 @@ index 07242e3..68553ff 100644
          }
      }
      globalThis.__dom_removeFromElementRegistry = _removeFromElementRegistry;
-@@ -1746,7 +1761,7 @@
+@@ -1746,7 +1800,7 @@
              scriptEl.type = "text/javascript";
              document.currentScript = scriptEl;
              /* Findable via getElementsByTagName("script"). */
@@ -6218,10 +6671,10 @@ index 07242e3..68553ff 100644
          }
 diff --git a/src/shims/mv_compat.js b/src/shims/mv_compat.js
 new file mode 100644
-index 0000000..69d71ca
+index 0000000..6f9f63c
 --- /dev/null
 +++ b/src/shims/mv_compat.js
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,223 @@
 +/*
 + * RPG Maker MV support: MV games are written against PIXI 4, while pixi_shim.js implements the PIXI 5 API that
 + * RPG Maker MZ uses. This file (loaded before MV's rpg_core.js) adds the PIXI 4 names and call forms that MV
@@ -6262,6 +6715,14 @@ index 0000000..69d71ca
 +        ZLayer: function() {},
 +        CompositeRectTileLayer: function() {},
 +    };
++    /* Pieces some plugins read at load time (mode-7 / perspective map plugins patch the WebGL tile layer); nothing
++       here draws, MV runs its canvas tilemap. */
++    ["RectTileLayer", "RectTileShader", "TilemapShader", "GraphicsLayer"].forEach(function(n) {
++        if (!PIXI.tilemap[n]) PIXI.tilemap[n] = function() {};
++    });
++    PIXI.tilemap.Constant = PIXI.tilemap.Constant || { maxTextures: 16, bufferSize: 2048, boundSize: 1024, boundCountPerBuffer: 4,
++                                                       SCALE_MODE: 0, DO_CLEAR: false, use32bitIndex: false };
++    PIXI.tilemap.shaderGenerator = PIXI.tilemap.shaderGenerator || {};
 +
 +    /* the WebGL paths that MV wraps (Sprite._renderWebGL_PIXI = PIXI.Sprite.prototype._renderWebGL, ...) */
 +    ["Sprite", "Container", "TilingSprite", "Graphics"].forEach(function(name) {
@@ -6281,6 +6742,39 @@ index 0000000..69d71ca
 +            this.graphicsData.push({ shape: new PIXI.Rectangle(x, y, w, h), type: 1 });
 +            return realDrawRect.apply(this, arguments);
 +        };
++    }
++
++    /* --- names from PIXI 3 and 4 that plugins still use --- */
++    PIXI.GC_MODES.DEFAULT = PIXI.GC_MODES.AUTO;
++    if (PIXI.SCALE_MODES && PIXI.SCALE_MODES.DEFAULT === undefined) PIXI.SCALE_MODES.DEFAULT = PIXI.SCALE_MODES.LINEAR;
++    if (PIXI.WRAP_MODES && PIXI.WRAP_MODES.DEFAULT === undefined) PIXI.WRAP_MODES.DEFAULT = PIXI.WRAP_MODES.CLAMP;
++    PIXI.DisplayObjectContainer = PIXI.Container;
++    if (!PIXI.ticker) {
++        PIXI.ticker = { Ticker: PIXI.Ticker };
++        Object.defineProperty(PIXI.ticker, "shared", { get: function() { return PIXI.Ticker.shared; } });
++    }
++    PIXI.loaders = PIXI.loaders || { Loader: PIXI.Loader, Resource: PIXI.LoaderResource };
++    if (PIXI.Texture && PIXI.utils) {
++        PIXI.Texture.fromImage = function(url, crossorigin, scaleMode) {
++            return PIXI.Texture.from(url, scaleMode === undefined ? undefined : { scaleMode: scaleMode });
++        };
++        PIXI.Texture.fromVideo = function(url) { return PIXI.Texture.from(url); };
++        PIXI.Texture.fromFrame = function(id) {
++            var t = PIXI.utils.TextureCache[id];
++            if (!t) throw new Error('The frameId "' + id + '" does not exist in the texture cache');
++            return t;
++        };
++        PIXI.Texture.removeTextureFromCache = function(id) {
++            var t = PIXI.utils.TextureCache[id];
++            delete PIXI.utils.TextureCache[id];
++            return t;
++        };
++        if (PIXI.BaseTexture) PIXI.BaseTexture.fromImage = function(url, crossorigin, scaleMode) {
++            return PIXI.BaseTexture.from(url, scaleMode === undefined ? undefined : { scaleMode: scaleMode });
++        };
++        ["TextureCache", "BaseTextureCache"].forEach(function(n) {
++            if (!(n in PIXI)) Object.defineProperty(PIXI, n, { get: function() { return PIXI.utils[n]; } });
++        });
 +    }
 +
 +    /* --- filters --- */
@@ -8131,10 +8625,100 @@ index 0000000..3f451af
 +    globalThis.__perfPostApplied = applied;
 +})();
 diff --git a/src/shims/pixi_shim.js b/src/shims/pixi_shim.js
-index 0ad7a94..8a9276f 100644
+index 0ad7a94..8b62490 100644
 --- a/src/shims/pixi_shim.js
 +++ b/src/shims/pixi_shim.js
-@@ -525,23 +525,40 @@
+@@ -368,6 +368,89 @@
+ 
+     PIXI.Rectangle = Rectangle;
+ 
++    /* The other shapes of PIXI.SHAPES. Plugins subclass them (CGMZ_Circle extends PIXI.Circle) or build hit areas. */
++    PIXI.SHAPES = { POLY: 0, RECT: 1, CIRC: 2, ELIP: 3, RREC: 4 };
++
++    function Circle(x, y, radius) {
++        this.x = x || 0;
++        this.y = y || 0;
++        this.radius = radius || 0;
++        this.type = 2;
++    }
++    Circle.prototype.clone = function() { return new Circle(this.x, this.y, this.radius); };
++    Circle.prototype.contains = function(x, y) {
++        if (this.radius <= 0) return false;
++        var dx = this.x - x, dy = this.y - y;
++        return dx * dx + dy * dy <= this.radius * this.radius;
++    };
++    Circle.prototype.getBounds = function() {
++        return new Rectangle(this.x - this.radius, this.y - this.radius, this.radius * 2, this.radius * 2);
++    };
++    PIXI.Circle = Circle;
++
++    function Ellipse(x, y, halfWidth, halfHeight) {
++        this.x = x || 0;
++        this.y = y || 0;
++        this.width = halfWidth || 0;
++        this.height = halfHeight || 0;
++        this.type = 3;
++    }
++    Ellipse.prototype.clone = function() { return new Ellipse(this.x, this.y, this.width, this.height); };
++    Ellipse.prototype.contains = function(x, y) {
++        if (this.width <= 0 || this.height <= 0) return false;
++        var nx = (x - this.x) / this.width, ny = (y - this.y) / this.height;
++        return nx * nx + ny * ny <= 1;
++    };
++    Ellipse.prototype.getBounds = function() {
++        return new Rectangle(this.x - this.width, this.y - this.height, this.width * 2, this.height * 2);
++    };
++    PIXI.Ellipse = Ellipse;
++
++    function Polygon() {
++        var points = Array.prototype.slice.call(arguments);
++        if (Array.isArray(points[0])) points = points[0];
++        if (points.length && typeof points[0] === "object") {
++            var flat = [];
++            for (var i = 0; i < points.length; i++) flat.push(points[i].x, points[i].y);
++            points = flat;
++        }
++        this.points = points;
++        this.closeStroke = true;
++        this.type = 0;
++    }
++    Polygon.prototype.clone = function() {
++        var p = new Polygon(this.points.slice());
++        p.closeStroke = this.closeStroke;
++        return p;
++    };
++    Polygon.prototype.contains = function(x, y) {
++        var inside = false, n = this.points.length / 2;
++        for (var i = 0, j = n - 1; i < n; j = i++) {
++            var xi = this.points[i * 2], yi = this.points[i * 2 + 1];
++            var xj = this.points[j * 2], yj = this.points[j * 2 + 1];
++            if (((yi > y) !== (yj > y)) && (x < (xj - xi) * ((y - yi) / (yj - yi)) + xi)) inside = !inside;
++        }
++        return inside;
++    };
++    PIXI.Polygon = Polygon;
++
++    function RoundedRectangle(x, y, width, height, radius) {
++        this.x = x || 0;
++        this.y = y || 0;
++        this.width = width || 0;
++        this.height = height || 0;
++        this.radius = radius === undefined ? 20 : radius;
++        this.type = 4;
++    }
++    RoundedRectangle.prototype.clone = function() {
++        return new RoundedRectangle(this.x, this.y, this.width, this.height, this.radius);
++    };
++    RoundedRectangle.prototype.contains = function(x, y) {
++        if (this.width <= 0 || this.height <= 0) return false;
++        return x >= this.x && x <= this.x + this.width && y >= this.y && y <= this.y + this.height;
++    };
++    PIXI.RoundedRectangle = RoundedRectangle;
++
+     /* PIXI.BaseTexture */
+ 
+     var _baseTextureId = 0;
+@@ -525,23 +608,40 @@
          var needCreate = this._glTexture === 0 || this._glTextureIsImageOwned ||
                           w !== this._glTexW || h !== this._glTexH;
          if (needCreate || this._glTextureDirtyId !== this.dirtyId) {
@@ -8179,7 +8763,7 @@ index 0ad7a94..8a9276f 100644
      BaseTexture.prototype.destroy = function() {
          if (this.destroyed) return;
  
-@@ -565,7 +582,7 @@
+@@ -565,7 +665,7 @@
              if (this._glTextureIsImageOwned) {
                  this._glTexture = 0;
              } else {
@@ -8188,7 +8772,48 @@ index 0ad7a94..8a9276f 100644
                  this._glTexture = 0;
              }
          }
-@@ -2269,6 +2286,10 @@
+@@ -596,6 +696,7 @@
+             cacheId = source;
+             var cached = PIXI.utils.BaseTextureCache[cacheId];
+             if (cached) return cached;
++            if (/\.(webm|mp4|ogv|m4v|mov)(\?|$)/i.test(source)) return BaseTexture.fromVideoUrl(source, options);
+         }
+ 
+         var bt = new BaseTexture(null, options);
+@@ -607,6 +708,32 @@
+         return bt;
+     };
+ 
++    /* A movie used as a texture (video plugins draw movies through PIXI sprites). The <video> element stands in for
++       the movie: it reports "loaded", can be "played" and ends, so scripts that wait for the end of a cutscene carry
++       on. The picture itself is not drawn (the texture stays empty). */
++    BaseTexture.fromVideoUrl = function(url, options) {
++        var video = document.createElement("video");
++        video.preload = "auto";
++        video.src = url;
++        var bt = new BaseTexture(null, options);
++        bt.cacheId = url;
++        PIXI.utils.BaseTextureCache[url] = bt;
++        bt.textureCacheIds.push(url);
++        bt.source = video;                        /* PIXI 4 */
++        bt.resource = { source: video, url: url, width: 0, height: 0 };   /* PIXI 5 */
++        var ready = function() {
++            if (bt.valid) return;
++            bt.setRealSize(video.videoWidth || 2, video.videoHeight || 2);
++            bt.valid = true;
++            bt.emit("update", bt);
++            bt.emit("loaded", bt);
++        };
++        video.addEventListener("loadeddata", ready);
++        video.addEventListener("canplay", ready);
++        if (typeof video.load === "function") video.load();
++        return bt;
++    };
++
+     BaseTexture.fromCanvas = function(canvas, scaleMode) {
+         var bt = new BaseTexture(null, { scaleMode: scaleMode });
+         bt.width = canvas.width || canvas._width || 0;
+@@ -2269,6 +2396,10 @@
          this.calculateVertices();
  
          if (typeof __native_renderer !== "undefined" && __native_renderer._active) {
@@ -8199,7 +8824,7 @@ index 0ad7a94..8a9276f 100644
              var tex = this._texture;
              var bt = tex.baseTexture;
              var glTex = bt._glTexture || 0;
-@@ -2414,6 +2435,10 @@
+@@ -2414,6 +2545,10 @@
          if (!this._texture || !this._texture.valid) return;
  
          if (typeof __native_renderer !== "undefined" && __native_renderer._active) {
@@ -8211,10 +8836,97 @@ index 0ad7a94..8a9276f 100644
              var bt = tex.baseTexture;
              var glTex = bt._glTexture || 0;
 diff --git a/src/shims/plugin_compat.js b/src/shims/plugin_compat.js
-index dc5e4dd..4213f13 100644
+index dc5e4dd..b0a1dda 100644
 --- a/src/shims/plugin_compat.js
 +++ b/src/shims/plugin_compat.js
-@@ -183,7 +183,7 @@
+@@ -102,47 +102,60 @@
+                         }
+                     }
+ 
++                    xhr.responseType = "arraybuffer";
+                     xhr.onload = function() {
+-                        var responseText = xhr.responseText || "";
+-                        resolve({
++                        var buf = xhr.response || new ArrayBuffer(0);
++                        var ctype = null;
++                        if (/\.(ogg|oga)(\?|$)/i.test(url)) ctype = "audio/ogg";
++                        else if (/\.json(\?|$)/i.test(url)) ctype = "application/json";
++                        var response = {
+                             ok: xhr.status >= 200 && xhr.status < 300,
+                             status: xhr.status,
+                             statusText: xhr.statusText || "",
++                            url: url,
++                            bodyUsed: false,
+                             headers: {
+-                                get: function() { return null; }
++                                get: function(name) {
++                                    name = String(name).toLowerCase();
++                                    if (name === "content-length") return String(buf.byteLength);
++                                    if (name === "content-type") return ctype;
++                                    return null;
++                                },
++                                has: function(name) { return this.get(name) !== null; }
+                             },
+                             text: function() {
+-                                return Promise.resolve(responseText);
++                                return Promise.resolve(new TextDecoder("utf-8").decode(new Uint8Array(buf)));
+                             },
+                             json: function() {
+                                 try {
+-                                    return Promise.resolve(JSON.parse(responseText));
++                                    return Promise.resolve(JSON.parse(new TextDecoder("utf-8").decode(new Uint8Array(buf))));
+                                 } catch (e) {
+                                     return Promise.reject(e);
+                                 }
+                             },
+-                            arrayBuffer: function() {
+-                                /* Re-read as binary if caller needs an ArrayBuffer. */
+-                                var binXhr = new XMLHttpRequest();
+-                                binXhr.open("GET", url);
+-                                binXhr.responseType = "arraybuffer";
+-                                return new Promise(function(res, rej) {
+-                                    binXhr.onload = function() { res(binXhr.response); };
+-                                    binXhr.onerror = function() { rej(new Error("arrayBuffer fetch failed")); };
+-                                    binXhr.send();
+-                                });
+-                            },
+-                            blob: function() {
+-                                var binXhr = new XMLHttpRequest();
+-                                binXhr.open("GET", url);
+-                                binXhr.responseType = "arraybuffer";
+-                                return new Promise(function(res, rej) {
+-                                    binXhr.onload = function() { res(new Blob([binXhr.response])); };
+-                                    binXhr.onerror = function() { rej(new Error("blob fetch failed")); };
+-                                    binXhr.send();
+-                                });
++                            arrayBuffer: function() { return Promise.resolve(buf.slice(0)); },
++                            blob: function() { return Promise.resolve(new Blob([buf])); },
++                            clone: function() { return response; },
++                            /* body.getReader(): the data in chunks, like a ReadableStream (streaming audio plugins read this way) */
++                            body: {
++                                getReader: function() {
++                                    var pos = 0, chunk = 65536;
++                                    return {
++                                        read: function() {
++                                            if (pos >= buf.byteLength) return Promise.resolve({ done: true, value: undefined });
++                                            var end = Math.min(buf.byteLength, pos + chunk);
++                                            var value = new Uint8Array(buf.slice(pos, end));
++                                            pos = end;
++                                            return Promise.resolve({ done: false, value: value });
++                                        },
++                                        cancel: function() { pos = buf.byteLength; return Promise.resolve(); },
++                                        releaseLock: function() {},
++                                        closed: Promise.resolve()
++                                    };
++                                }
+                             }
+-                        });
++                        };
++                        resolve(response);
+                     };
+ 
+                     xhr.onerror = function() {
+@@ -183,7 +196,7 @@
      if (typeof globalThis.require === "function") {
          var _origRequire = globalThis.require;
          globalThis.require = function(moduleName) {
@@ -8223,7 +8935,7 @@ index dc5e4dd..4213f13 100644
                  var steamId = {
                      screenName: "Player", steamId: "0", accountId: 0, staticAccountId: "0",
                      isIndividualAccount: true, level: 0, getPersonaName: function() { return "Player"; }
-@@ -422,17 +422,60 @@
+@@ -422,17 +435,60 @@
         through RegExp.prototype.exec, so wrapping it is sufficient. */
  
      if (typeof RegExp.$1 === "undefined") {
@@ -8274,7 +8986,8 @@ index dc5e4dd..4213f13 100644
 +                    _lastInput = String(this);
 +                }
 +                return one;
-+            }
+             }
+-            return m;
 +            var r = _nativeMatch.apply(this, arguments);
 +            if (r && re instanceof RegExp) {
 +                if (re.global) {
@@ -8284,13 +8997,12 @@ index dc5e4dd..4213f13 100644
 +                    _lastMatch = r;
 +                }
 +                _lastInput = String(this);
-             }
--            return m;
++            }
 +            return r;
          };
  
          var _defineStatic = function(names, getter) {
-@@ -472,3 +515,24 @@
+@@ -472,3 +528,24 @@
      }
  
  })();

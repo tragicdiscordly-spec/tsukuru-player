@@ -466,11 +466,44 @@ static void last_run_message(char* message, size_t size) {
 
 /* --- deleting a game from the console --- */
 
+/* Deleting a big game takes a while (tens of thousands of files), so it runs in its own thread and the list keeps
+ * drawing a progress bar. The thread only touches these counters; everything else stays in the main thread. */
+static SDL_atomic_t del_total, del_done, del_finished, del_result;
+static char del_path[1400];
+static SDL_Thread* del_thread;
+static int delete_busy;      /* main thread only: a deletion is running */
+static int delete_permille;  /* progress for the bar, 0..1000 */
+
+/* Number of files and folders below `path` (folders included, `path` itself not). */
+static int count_entries(const char* path, int depth) {
+	DIR* d = opendir(path);
+	if (!d || depth > 24) {
+		if (d) closedir(d);
+		return 0;
+	}
+	int n = 0;
+	struct dirent* e;
+	while ((e = readdir(d))) {
+		if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+		char child[1400];
+		struct stat st;
+		snprintf(child, sizeof child, "%s/%s", path, e->d_name);
+		n++;
+		if (lstat(child, &st) == 0 && S_ISDIR(st.st_mode)) n += count_entries(child, depth + 1);
+	}
+	closedir(d);
+	return n;
+}
+
 /* Removes a file or a whole folder. Returns 0 when everything is gone. */
 static int remove_tree(const char* path, int depth) {
 	struct stat st;
 	if (depth > 24 || lstat(path, &st) != 0) return -1;
-	if (!S_ISDIR(st.st_mode)) return unlink(path);
+	if (!S_ISDIR(st.st_mode)) {
+		int r = unlink(path);
+		SDL_AtomicAdd(&del_done, 1);
+		return r;
+	}
 	int rc = 0;
 	/* Entries are removed while the folder is read, so read it again until nothing is left. */
 	for (int pass = 0; pass < 50; pass++) {
@@ -489,7 +522,29 @@ static int remove_tree(const char* path, int depth) {
 		if (!seen) break;
 	}
 	if (rmdir(path) != 0) rc = -1;
+	SDL_AtomicAdd(&del_done, 1);
 	return rc;
+}
+
+static int delete_worker(void* arg) {
+	(void)arg;
+	SDL_AtomicSet(&del_total, count_entries(del_path, 0) + 1);
+	SDL_AtomicSet(&del_result, remove_tree(del_path, 0));
+	SDL_AtomicSet(&del_finished, 1);
+	return 0;
+}
+
+/* Starts deleting `path` in the background. Returns 0 when the thread runs. */
+static int delete_start(const char* path) {
+	snprintf(del_path, sizeof del_path, "%s", path);
+	SDL_AtomicSet(&del_total, 0);
+	SDL_AtomicSet(&del_done, 0);
+	SDL_AtomicSet(&del_finished, 0);
+	SDL_AtomicSet(&del_result, -1);
+	del_thread = SDL_CreateThread(delete_worker, "delete", NULL);
+	delete_busy = del_thread != NULL;
+	delete_permille = 0;
+	return del_thread ? 0 : -1;
 }
 
 /* Only folders below /data/games (the console's own storage) may be deleted from here; never anything on a USB stick. */
@@ -856,6 +911,10 @@ static void draw_screen(int selected, int scroll, const char* message) {
 		draw_text(font_small, addr, SCREEN_W - 90 - text_width(font_small, addr), SCREEN_H - 92, dim);
 	}
 	if (message[0]) draw_text_fit(font_small, message, 90, SCREEN_H - 50, SCREEN_W - 180, gold);
+	if (delete_busy) {
+		fill(90, SCREEN_H - 16, SCREEN_W - 180, 8, 52, 60, 110);
+		fill(90, SCREEN_H - 16, (SCREEN_W - 180) * delete_permille / 1000, 8, 255, 210, 90);
+	}
 	maybe_shot();
 	SDL_RenderPresent(ren);
 }
@@ -951,7 +1010,8 @@ int main(void) {
 	}
 
 	int selected = 0, scroll = 0, dirty = 1, hold = 0, warned = -1, delete_armed = -1;
-	Uint32 next_repeat = 0;
+	Uint32 next_repeat = 0, delete_redraw = 0;
+	char delete_name[256] = "";
 	char message[700] = "";
 	if (game_count > 0 && games[0].missing_rtp[0]) {
 		snprintf(message, sizeof message,
@@ -967,6 +1027,7 @@ int main(void) {
 		SDL_Event e;
 		while (SDL_PollEvent(&e)) {
 			if (e.type == SDL_QUIT) running = 0;
+			if (delete_busy) continue; /* buttons do nothing while a game is being deleted */
 			if (e.type == SDL_JOYBUTTONDOWN && screen == 1) {
 				switch (e.jbutton.button) {
 				case 0: /* Cross */
@@ -1016,14 +1077,14 @@ int main(void) {
 						snprintf(message, sizeof message, "Delete \"%s\" from the console? Press Square again to delete it, any other button to cancel.",
 						         games[selected].name);
 					} else {
-						char name[256];
-						snprintf(name, sizeof name, "%s", games[selected].name);
-						int rc = remove_tree(games[selected].path, 0);
+						snprintf(delete_name, sizeof delete_name, "%s", games[selected].name);
 						delete_armed = -1;
-						scan_games();
-						if (selected >= game_count) selected = game_count ? game_count - 1 : 0;
-						if (scroll > selected) scroll = selected;
-						snprintf(message, sizeof message, rc == 0 ? "Deleted \"%s\"." : "Could not delete all of \"%s\".", name);
+						if (delete_start(games[selected].path) == 0) {
+							snprintf(message, sizeof message, "Deleting \"%s\" ... counting files", delete_name);
+							delete_redraw = SDL_GetTicks();
+						} else {
+							snprintf(message, sizeof message, "Could not start deleting \"%s\".", delete_name);
+						}
 					}
 					dirty = 1;
 					break;
@@ -1049,6 +1110,35 @@ int main(void) {
 				case 10: move = VISIBLE_ROWS - 1; break;    /* R1 */
 				}
 			}
+		}
+
+		if (delete_busy) {
+			/* progress bar while the deleting thread works; redraw about 8 times a second */
+			Uint32 t = SDL_GetTicks();
+			int total = SDL_AtomicGet(&del_total), done = SDL_AtomicGet(&del_done);
+			if (SDL_AtomicGet(&del_finished)) {
+				SDL_WaitThread(del_thread, NULL);
+				del_thread = NULL;
+				delete_busy = 0;
+				int rc = SDL_AtomicGet(&del_result);
+				scan_games();
+				if (selected >= game_count) selected = game_count ? game_count - 1 : 0;
+				if (scroll > selected) scroll = selected;
+				snprintf(message, sizeof message, rc == 0 ? "Deleted \"%s\"." : "Could not delete all of \"%s\".", delete_name);
+				dirty = 1;
+			} else if (t - delete_redraw >= 120) {
+				delete_redraw = t;
+				if (total > 0) {
+					delete_permille = (int)((long long)done * 1000 / total);
+					if (delete_permille > 1000) delete_permille = 1000;
+					snprintf(message, sizeof message, "Deleting \"%s\" ... %d of %d files (%d%%). Please wait.", delete_name, done,
+					         total, delete_permille / 10);
+				} else {
+					snprintf(message, sizeof message, "Deleting \"%s\" ... counting files", delete_name);
+				}
+				dirty = 1;
+			}
+			move = 0;
 		}
 
 		/* held direction (D-pad hat/buttons or left stick) with key repeat */
@@ -1080,7 +1170,7 @@ int main(void) {
 			move = 0;
 		}
 
-		if (move && game_count > 0 && screen == 0) {
+		if (move && game_count > 0 && screen == 0 && !delete_busy) {
 			selected += move;
 			if (selected < 0) selected = 0;
 			if (selected >= game_count) selected = game_count - 1;

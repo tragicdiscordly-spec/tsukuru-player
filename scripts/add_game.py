@@ -13,10 +13,11 @@ You can also drag game folders onto add-game.bat.
 """
 import ftplib
 import os
+import queue
+import socket
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 HOST = os.environ.get('PS5_HOST', '192.168.1.16')
 PORT = 2121
@@ -34,6 +35,11 @@ def connect():
 def enter(ftp, path):
     """ftpsrv answers 550 to MKD for existing folders and rejects absolute paths in STOR, so walk
     the path with CWD and only create what is missing."""
+    try:
+        ftp.cwd(path)  # the usual case: the folder is already there
+        return
+    except ftplib.error_perm:
+        pass
     cur = ''
     for part in [p for p in path.split('/') if p]:
         cur += '/' + part
@@ -73,6 +79,7 @@ class Progress:
         self.lock = threading.Lock()
         self.total_files, self.total_bytes = total_files, total_bytes
         self.files = self.copied = self.skipped = self.bytes = 0
+        self.failed = []
         self.start = self.last = time.time()
 
     def add(self, size, copied):
@@ -83,32 +90,80 @@ class Progress:
                 self.bytes += size
             else:
                 self.skipped += 1
-            now = time.time()
-            if now - self.last >= 3 or self.files == self.total_files:
-                self.last = now
-                rate = self.bytes / max(now - self.start, 1e-6) / 1e6
-                print(f'  {self.files}/{self.total_files} files ({self.copied} copied, '
-                      f'{self.skipped} already there), {rate:.1f} MB/s', flush=True)
+            self.show()
+
+    def fail(self, path):
+        with self.lock:
+            self.files += 1
+            self.failed.append(path)
+            self.show(force=True)
+
+    def show(self, force=False):
+        now = time.time()
+        if force or now - self.last >= 3 or self.files == self.total_files:
+            self.last = now
+            elapsed = max(now - self.start, 1e-6)
+            rate = self.bytes / elapsed / 1e6
+            # the time left is estimated from the files that had to be copied (skipped ones cost nothing)
+            todo = max(self.total_files - self.files, 0)
+            eta = ''
+            if self.copied >= 20:
+                secs = todo * elapsed / self.copied
+                eta = f', about {int(secs // 60)} min {int(secs % 60)} s left'
+            print(f'  {self.files}/{self.total_files} files ({self.copied} copied, {self.skipped} already there'
+                  f'{f", {len(self.failed)} FAILED" if self.failed else ""}), {rate:.1f} MB/s{eta}', flush=True)
 
 
-def upload_directory(remote_dir, entries, progress):
-    """entries: list of (local_path, name). Runs on its own FTP connection."""
-    ftp = connect()
-    try:
-        enter(ftp, remote_dir)
-        existing = remote_sizes(ftp)
-        for path, name in entries:
-            size = os.path.getsize(path)
-            if existing.get(name) == size:
-                progress.add(size, False)
-                continue
-            with open(path, 'rb') as f:
-                ftp.storbinary(f'STOR {name}', f)
-            progress.add(size, True)
-    finally:
+RETRIES = 6
+
+
+def upload_worker(jobs, progress):
+    """One FTP connection that stays open for many folders (a new connection per folder is slow and wears the
+    console's FTP server out on games with thousands of folders). A dropped connection is re-opened and the
+    folder carried on where it stopped."""
+    ftp = None
+    while True:
+        try:
+            remote_dir, entries = jobs.get_nowait()
+        except queue.Empty:
+            break
+        pending = list(entries)
+        attempt = 0
+        while pending:
+            try:
+                if ftp is None:
+                    ftp = connect()
+                enter(ftp, remote_dir)
+                existing = remote_sizes(ftp)
+                while pending:
+                    path, name = pending[0]
+                    size = os.path.getsize(path)
+                    if existing.get(name) == size:
+                        progress.add(size, False)
+                    else:
+                        with open(path, 'rb') as f:
+                            ftp.storbinary(f'STOR {name}', f)
+                        progress.add(size, True)
+                    pending.pop(0)
+            except (OSError, ftplib.all_errors) as e:
+                try:
+                    if ftp is not None:
+                        ftp.close()
+                except OSError:
+                    pass
+                ftp = None
+                attempt += 1
+                if attempt > RETRIES:
+                    for path, _name in pending:
+                        progress.fail(path)
+                    print(f'  giving up on {remote_dir}: {e}', flush=True)
+                    pending = []
+                else:
+                    time.sleep(min(2 ** attempt, 30))
+    if ftp is not None:
         try:
             ftp.quit()
-        except ftplib.all_errors:
+        except (OSError, ftplib.all_errors):
             pass
 
 
@@ -144,11 +199,21 @@ def add_game(folder, jobs, remote_name=None):
     ftp.quit()
 
     progress = Progress(total_files, total_bytes)
-    with ThreadPoolExecutor(max_workers=jobs) as pool:
-        futures = [pool.submit(upload_directory, rdir, entries, progress)
-                   for rdir, entries in by_dir.items() if entries]
-        for fut in futures:
-            fut.result()
+    jobs_queue = queue.Queue()
+    for rdir, entries in by_dir.items():
+        if entries:
+            jobs_queue.put((rdir, entries))
+    workers = [threading.Thread(target=upload_worker, args=(jobs_queue, progress)) for _ in range(jobs)]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join()
+    if progress.failed:
+        print(f'{name}: {len(progress.failed)} files could not be sent. Run the same command again: files that are '
+              'already there are skipped, so only the missing ones are sent.')
+        for path in progress.failed[:10]:
+            print('   ', path)
+        sys.exit(1)
     print(f'{name}: done in {time.time() - progress.start:.0f} s')
     if remote_name is None:
         check_rtp(folder)
