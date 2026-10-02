@@ -266,7 +266,7 @@ index 49068aa..32cd251 100644
          fprintf(stderr, "audio_load_from_memory: failed (error %d)\n", res);
          delete e->wav;
 diff --git a/src/bindings/bind_canvas2d.c b/src/bindings/bind_canvas2d.c
-index e431815..3d71b77 100644
+index e431815..b7163fd 100644
 --- a/src/bindings/bind_canvas2d.c
 +++ b/src/bindings/bind_canvas2d.c
 @@ -3,6 +3,7 @@
@@ -337,7 +337,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 1)
          return JS_ThrowTypeError(ctx, "destroy requires a handle");
-@@ -60,10 +100,18 @@ static JSValue js_c2d_destroy(JSContext *ctx, JSValueConst this_val,
+@@ -60,10 +100,41 @@ static JSValue js_c2d_destroy(JSContext *ctx, JSValueConst this_val,
      return JS_UNDEFINED;
  }
  
@@ -348,6 +348,29 @@ index e431815..3d71b77 100644
 +    return JS_NewInt32(ctx, (int32_t)canvas2d_context_count());
 +}
 +
++/* bytesAlive() -> pixel bytes held by all canvases (diagnostics) */
++static JSValue js_c2d_bytes_alive(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
++{
++    (void)this_val; (void)argc; (void)argv;
++    return JS_NewFloat64(ctx, (double)canvas2d_bytes_alive());
++}
++
++/* contextSizes() -> [[w, h], ...] of the live canvases (diagnostics) */
++static JSValue js_c2d_context_sizes(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
++{
++    (void)this_val; (void)argc; (void)argv;
++    static int w[4096], h[4096];
++    size_t n = canvas2d_list_sizes(w, h, 4096);
++    JSValue arr = JS_NewArray(ctx);
++    for (size_t i = 0; i < n; i++) {
++        JSValue pair = JS_NewArray(ctx);
++        JS_SetPropertyUint32(ctx, pair, 0, JS_NewInt32(ctx, w[i]));
++        JS_SetPropertyUint32(ctx, pair, 1, JS_NewInt32(ctx, h[i]));
++        JS_SetPropertyUint32(ctx, arr, (uint32_t)i, pair);
++    }
++    return arr;
++}
++
  /* resize(handle, width, height) */
  static JSValue js_c2d_resize(JSContext *ctx, JSValueConst this_val,
                                int argc, JSValueConst *argv)
@@ -356,7 +379,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 3)
          return JS_ThrowTypeError(ctx, "resize requires handle, width, height");
-@@ -84,6 +132,7 @@ static JSValue js_c2d_resize(JSContext *ctx, JSValueConst this_val,
+@@ -84,6 +155,7 @@ static JSValue js_c2d_resize(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_get_size(JSContext *ctx, JSValueConst this_val,
                                  int argc, JSValueConst *argv)
  {
@@ -364,7 +387,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 1)
          return JS_ThrowTypeError(ctx, "getSize requires a handle");
-@@ -103,6 +152,7 @@ static JSValue js_c2d_get_size(JSContext *ctx, JSValueConst this_val,
+@@ -103,6 +175,7 @@ static JSValue js_c2d_get_size(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_set_fill_color(JSContext *ctx, JSValueConst this_val,
                                        int argc, JSValueConst *argv)
  {
@@ -372,7 +395,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 5)
          return JS_ThrowTypeError(ctx, "setFillColor requires handle,r,g,b,a");
-@@ -120,6 +170,7 @@ static JSValue js_c2d_set_fill_color(JSContext *ctx, JSValueConst this_val,
+@@ -120,6 +193,7 @@ static JSValue js_c2d_set_fill_color(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_set_stroke_color(JSContext *ctx, JSValueConst this_val,
                                          int argc, JSValueConst *argv)
  {
@@ -380,7 +403,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 5)
          return JS_ThrowTypeError(ctx, "setStrokeColor requires handle,r,g,b,a");
-@@ -137,6 +188,7 @@ static JSValue js_c2d_set_stroke_color(JSContext *ctx, JSValueConst this_val,
+@@ -137,6 +211,7 @@ static JSValue js_c2d_set_stroke_color(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_set_global_alpha(JSContext *ctx, JSValueConst this_val,
                                          int argc, JSValueConst *argv)
  {
@@ -388,7 +411,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 2)
          return JS_ThrowTypeError(ctx, "setGlobalAlpha requires handle, alpha");
-@@ -151,6 +203,7 @@ static JSValue js_c2d_set_global_alpha(JSContext *ctx, JSValueConst this_val,
+@@ -151,6 +226,7 @@ static JSValue js_c2d_set_global_alpha(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_set_composite_op(JSContext *ctx, JSValueConst this_val,
                                          int argc, JSValueConst *argv)
  {
@@ -396,7 +419,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 2)
          return JS_ThrowTypeError(ctx, "setCompositeOp requires handle, op");
-@@ -165,6 +218,7 @@ static JSValue js_c2d_set_composite_op(JSContext *ctx, JSValueConst this_val,
+@@ -165,6 +241,7 @@ static JSValue js_c2d_set_composite_op(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_set_line_width(JSContext *ctx, JSValueConst this_val,
                                        int argc, JSValueConst *argv)
  {
@@ -404,7 +427,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 2)
          return JS_ThrowTypeError(ctx, "setLineWidth requires handle, width");
-@@ -179,6 +233,7 @@ static JSValue js_c2d_set_line_width(JSContext *ctx, JSValueConst this_val,
+@@ -179,6 +256,7 @@ static JSValue js_c2d_set_line_width(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_set_text_align(JSContext *ctx, JSValueConst this_val,
                                        int argc, JSValueConst *argv)
  {
@@ -412,7 +435,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 2)
          return JS_ThrowTypeError(ctx, "setTextAlign requires handle, align");
-@@ -193,6 +248,7 @@ static JSValue js_c2d_set_text_align(JSContext *ctx, JSValueConst this_val,
+@@ -193,6 +271,7 @@ static JSValue js_c2d_set_text_align(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_set_text_baseline(JSContext *ctx, JSValueConst this_val,
                                           int argc, JSValueConst *argv)
  {
@@ -420,7 +443,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 2)
          return JS_ThrowTypeError(ctx, "setTextBaseline requires handle, baseline");
-@@ -209,6 +265,7 @@ static JSValue js_c2d_set_text_baseline(JSContext *ctx, JSValueConst this_val,
+@@ -209,6 +288,7 @@ static JSValue js_c2d_set_text_baseline(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_save(JSContext *ctx, JSValueConst this_val,
                              int argc, JSValueConst *argv)
  {
@@ -428,7 +451,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 1) return JS_ThrowTypeError(ctx, "save requires a handle");
      uint32_t handle;
-@@ -221,6 +278,7 @@ static JSValue js_c2d_save(JSContext *ctx, JSValueConst this_val,
+@@ -221,6 +301,7 @@ static JSValue js_c2d_save(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_restore(JSContext *ctx, JSValueConst this_val,
                                 int argc, JSValueConst *argv)
  {
@@ -436,7 +459,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 1) return JS_ThrowTypeError(ctx, "restore requires a handle");
      uint32_t handle;
-@@ -235,6 +293,7 @@ static JSValue js_c2d_restore(JSContext *ctx, JSValueConst this_val,
+@@ -235,6 +316,7 @@ static JSValue js_c2d_restore(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_fill_rect(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv)
  {
@@ -444,7 +467,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 5)
          return JS_ThrowTypeError(ctx, "fillRect requires handle,x,y,w,h");
-@@ -248,10 +307,132 @@ static JSValue js_c2d_fill_rect(JSContext *ctx, JSValueConst this_val,
+@@ -248,10 +330,132 @@ static JSValue js_c2d_fill_rect(JSContext *ctx, JSValueConst this_val,
      return JS_UNDEFINED;
  }
  
@@ -577,7 +600,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 5)
          return JS_ThrowTypeError(ctx, "clearRect requires handle,x,y,w,h");
-@@ -269,6 +450,7 @@ static JSValue js_c2d_clear_rect(JSContext *ctx, JSValueConst this_val,
+@@ -269,6 +473,7 @@ static JSValue js_c2d_clear_rect(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_stroke_rect(JSContext *ctx, JSValueConst this_val,
                                     int argc, JSValueConst *argv)
  {
@@ -585,7 +608,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 5)
          return JS_ThrowTypeError(ctx, "strokeRect requires handle,x,y,w,h");
-@@ -286,6 +468,7 @@ static JSValue js_c2d_stroke_rect(JSContext *ctx, JSValueConst this_val,
+@@ -286,6 +491,7 @@ static JSValue js_c2d_stroke_rect(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_draw_image(JSContext *ctx, JSValueConst this_val,
                                    int argc, JSValueConst *argv)
  {
@@ -593,7 +616,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 12)
          return JS_ThrowTypeError(ctx, "drawImage requires 12 arguments");
-@@ -326,6 +509,7 @@ static JSValue js_c2d_draw_image(JSContext *ctx, JSValueConst this_val,
+@@ -326,6 +532,7 @@ static JSValue js_c2d_draw_image(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_draw_image_handle(JSContext *ctx, JSValueConst this_val,
                                           int argc, JSValueConst *argv)
  {
@@ -601,7 +624,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 10)
          return JS_ThrowTypeError(ctx, "drawImageHandle requires 10 arguments");
-@@ -360,6 +544,7 @@ static JSValue js_c2d_draw_image_handle(JSContext *ctx, JSValueConst this_val,
+@@ -360,6 +567,7 @@ static JSValue js_c2d_draw_image_handle(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_get_image_data(JSContext *ctx, JSValueConst this_val,
                                        int argc, JSValueConst *argv)
  {
@@ -609,7 +632,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 5)
          return JS_ThrowTypeError(ctx, "getImageData requires handle,x,y,w,h");
-@@ -392,6 +577,7 @@ static JSValue js_c2d_get_image_data(JSContext *ctx, JSValueConst this_val,
+@@ -392,6 +600,7 @@ static JSValue js_c2d_get_image_data(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_put_image_data(JSContext *ctx, JSValueConst this_val,
                                        int argc, JSValueConst *argv)
  {
@@ -617,7 +640,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 6)
          return JS_ThrowTypeError(ctx, "putImageData requires handle,data,x,y,w,h");
-@@ -423,6 +609,7 @@ static JSValue js_c2d_put_image_data(JSContext *ctx, JSValueConst this_val,
+@@ -423,6 +632,7 @@ static JSValue js_c2d_put_image_data(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_get_pixels(JSContext *ctx, JSValueConst this_val,
                                    int argc, JSValueConst *argv)
  {
@@ -625,7 +648,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 1) return JS_ThrowTypeError(ctx, "getPixels requires a handle");
      uint32_t handle;
-@@ -445,6 +632,7 @@ static JSValue js_c2d_get_pixels(JSContext *ctx, JSValueConst this_val,
+@@ -445,6 +655,7 @@ static JSValue js_c2d_get_pixels(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_load_font(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv)
  {
@@ -633,7 +656,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 2)
          return JS_ThrowTypeError(ctx, "loadFont requires name and ArrayBuffer");
-@@ -468,6 +656,7 @@ static JSValue js_c2d_load_font(JSContext *ctx, JSValueConst this_val,
+@@ -468,6 +679,7 @@ static JSValue js_c2d_load_font(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_load_font_file(JSContext *ctx, JSValueConst this_val,
                                        int argc, JSValueConst *argv)
  {
@@ -641,7 +664,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 2)
          return JS_ThrowTypeError(ctx, "loadFontFile requires name and path");
-@@ -506,6 +695,7 @@ static JSValue js_c2d_load_font_file(JSContext *ctx, JSValueConst this_val,
+@@ -506,6 +718,7 @@ static JSValue js_c2d_load_font_file(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_set_font(JSContext *ctx, JSValueConst this_val,
                                  int argc, JSValueConst *argv)
  {
@@ -649,7 +672,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 3)
          return JS_ThrowTypeError(ctx, "setFont requires handle, name, pixelSize");
-@@ -526,6 +716,7 @@ static JSValue js_c2d_set_font(JSContext *ctx, JSValueConst this_val,
+@@ -526,6 +739,7 @@ static JSValue js_c2d_set_font(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_fill_text(JSContext *ctx, JSValueConst this_val,
                                   int argc, JSValueConst *argv)
  {
@@ -657,7 +680,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 4)
          return JS_ThrowTypeError(ctx, "fillText requires handle,text,x,y");
-@@ -544,6 +735,7 @@ static JSValue js_c2d_fill_text(JSContext *ctx, JSValueConst this_val,
+@@ -544,6 +758,7 @@ static JSValue js_c2d_fill_text(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_stroke_text(JSContext *ctx, JSValueConst this_val,
                                     int argc, JSValueConst *argv)
  {
@@ -665,7 +688,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 4)
          return JS_ThrowTypeError(ctx, "strokeText requires handle,text,x,y");
-@@ -562,6 +754,7 @@ static JSValue js_c2d_stroke_text(JSContext *ctx, JSValueConst this_val,
+@@ -562,6 +777,7 @@ static JSValue js_c2d_stroke_text(JSContext *ctx, JSValueConst this_val,
  static JSValue js_c2d_measure_text(JSContext *ctx, JSValueConst this_val,
                                      int argc, JSValueConst *argv)
  {
@@ -673,7 +696,7 @@ index e431815..3d71b77 100644
      (void)this_val;
      if (argc < 2)
          return JS_ThrowTypeError(ctx, "measureText requires handle and text");
-@@ -574,11 +767,32 @@ static JSValue js_c2d_measure_text(JSContext *ctx, JSValueConst this_val,
+@@ -574,11 +790,34 @@ static JSValue js_c2d_measure_text(JSContext *ctx, JSValueConst this_val,
      return JS_NewFloat64(ctx, (double)w);
  }
  
@@ -703,10 +726,12 @@ index e431815..3d71b77 100644
      JS_CFUNC_DEF("destroy",          1, js_c2d_destroy),
 +    JS_CFUNC_DEF("createToken",      1, js_c2d_create_token),
 +    JS_CFUNC_DEF("contextCount",     0, js_c2d_context_count),
++    JS_CFUNC_DEF("bytesAlive",       0, js_c2d_bytes_alive),
++    JS_CFUNC_DEF("contextSizes",     0, js_c2d_context_sizes),
      JS_CFUNC_DEF("resize",           3, js_c2d_resize),
      JS_CFUNC_DEF("getSize",          1, js_c2d_get_size),
      JS_CFUNC_DEF("setFillColor",     5, js_c2d_set_fill_color),
-@@ -591,6 +805,8 @@ static const JSCFunctionListEntry js_c2d_funcs[] = {
+@@ -591,6 +830,8 @@ static const JSCFunctionListEntry js_c2d_funcs[] = {
      JS_CFUNC_DEF("save",             1, js_c2d_save),
      JS_CFUNC_DEF("restore",          1, js_c2d_restore),
      JS_CFUNC_DEF("fillRect",         5, js_c2d_fill_rect),
@@ -715,7 +740,7 @@ index e431815..3d71b77 100644
      JS_CFUNC_DEF("clearRect",        5, js_c2d_clear_rect),
      JS_CFUNC_DEF("strokeRect",       5, js_c2d_stroke_rect),
      JS_CFUNC_DEF("drawImage",       12, js_c2d_draw_image),
-@@ -604,10 +820,18 @@ static const JSCFunctionListEntry js_c2d_funcs[] = {
+@@ -604,10 +845,18 @@ static const JSCFunctionListEntry js_c2d_funcs[] = {
      JS_CFUNC_DEF("fillText",         4, js_c2d_fill_text),
      JS_CFUNC_DEF("strokeText",       4, js_c2d_stroke_text),
      JS_CFUNC_DEF("measureText",      2, js_c2d_measure_text),
@@ -4813,7 +4838,7 @@ index 0000000..7e5cb26
 + * Copyright (c) 2026 the PS5 port contributors */
 +#include <SDL2/SDL_opengl.h>
 diff --git a/src/rendering/canvas2d.c b/src/rendering/canvas2d.c
-index 9e47eca..60a591b 100644
+index 9e47eca..21ddde6 100644
 --- a/src/rendering/canvas2d.c
 +++ b/src/rendering/canvas2d.c
 @@ -29,7 +29,7 @@ typedef struct {
@@ -5051,10 +5076,19 @@ index 9e47eca..60a591b 100644
      free(ctx->pixels);
      ctx->pixels = new_pixels;
      ctx->width = width;
-@@ -364,6 +488,11 @@ size_t canvas2d_context_count(void)
+@@ -364,6 +488,20 @@ size_t canvas2d_context_count(void)
      return s_ctx_count;
  }
  
++size_t canvas2d_list_sizes(int *w, int *h, size_t max)
++{
++    size_t n = 0;
++    for (size_t i = 0; i < MAX_CONTEXTS && n < max; i++) {
++        if (s_contexts[i].active) { w[n] = s_contexts[i].width; h[n] = s_contexts[i].height; n++; }
++    }
++    return n;
++}
++
 +size_t canvas2d_bytes_alive(void)
 +{
 +    return s_bytes_alive;
@@ -5063,7 +5097,7 @@ index 9e47eca..60a591b 100644
  /* State setters */
  
  void canvas2d_set_fill_color(Canvas2DHandle h, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
-@@ -444,6 +573,101 @@ void canvas2d_restore(Canvas2DHandle h)
+@@ -444,6 +582,101 @@ void canvas2d_restore(Canvas2DHandle h)
  
  /* Drawing operations */
  
@@ -5165,7 +5199,7 @@ index 9e47eca..60a591b 100644
  void canvas2d_fill_rect(Canvas2DHandle h, int x, int y, int w, int h2)
  {
      Canvas2DCtx *ctx = find_ctx(h);
-@@ -461,12 +685,575 @@ void canvas2d_fill_rect(Canvas2DHandle h, int x, int y, int w, int h2)
+@@ -461,12 +694,575 @@ void canvas2d_fill_rect(Canvas2DHandle h, int x, int y, int w, int h2)
      float ga = ctx->state.global_alpha;
      int comp = ctx->state.composite_op;
  
@@ -5659,8 +5693,8 @@ index 9e47eca..60a591b 100644
 +                    fill_span(ctx->pixels + ((size_t)y * ctx->width + xa) * 4, xb - xa, fr, fg, fb, fa, ga, comp);
 +                }
 +            }
-+        }
-+    }
+         }
+     }
 +    free(xs);
 +}
 +
@@ -5701,9 +5735,9 @@ index 9e47eca..60a591b 100644
 +            ne++;
 +            if (y0 < min_y) min_y = y0;
 +            if (y1 > max_y) max_y = y1;
-         }
++        }
 +        p += 2 * (size_t)n;
-     }
++    }
 +    if (ne == 0) { free(edges); return; }
 +
 +    int ch = ctx->height, cw = ctx->width;
@@ -5745,7 +5779,7 @@ index 9e47eca..60a591b 100644
  }
  
  void canvas2d_clear_rect(Canvas2DHandle h, int x, int y, int w, int h2)
-@@ -552,6 +1339,7 @@ void canvas2d_draw_image(Canvas2DHandle h,
+@@ -552,6 +1348,7 @@ void canvas2d_draw_image(Canvas2DHandle h,
  
      float ga = ctx->state.global_alpha;
      int comp = ctx->state.composite_op;
@@ -5753,7 +5787,7 @@ index 9e47eca..60a591b 100644
  
      for (int py = 0; py < dh; py++) {
          int dst_y = dy + py;
-@@ -560,17 +1348,26 @@ void canvas2d_draw_image(Canvas2DHandle h,
+@@ -560,17 +1357,26 @@ void canvas2d_draw_image(Canvas2DHandle h,
          for (int px = 0; px < dw; px++) {
              int dst_x = dx + px;
              if (dst_x < 0 || dst_x >= ctx->width) continue;
@@ -5782,7 +5816,7 @@ index 9e47eca..60a591b 100644
  }
  
  /* Pixel manipulation */
-@@ -811,6 +1608,7 @@ static FontEntry *load_fallback_font(size_t i)
+@@ -811,6 +1617,7 @@ static FontEntry *load_fallback_font(size_t i)
  typedef struct {
      FontEntry *fe;
      int        glyph;     /* 0 = notdef in fe */
@@ -5790,7 +5824,7 @@ index 9e47eca..60a591b 100644
  } GlyphRef;
  
  /* The font that can draw `cp`: the requested font, another game font, or a
-@@ -818,20 +1616,23 @@ typedef struct {
+@@ -818,20 +1625,23 @@ typedef struct {
     requested font so their advances match its metrics. */
  static GlyphRef resolve_glyph(FontEntry *primary, int cp)
  {
@@ -5818,7 +5852,7 @@ index 9e47eca..60a591b 100644
      }
      return r;
  }
-@@ -845,7 +1646,8 @@ static float glyph_advance(FontEntry *primary, float pixel_size, int cp, int nex
+@@ -845,7 +1655,8 @@ static float glyph_advance(FontEntry *primary, float pixel_size, int cp, int nex
      int advance, lsb;
      stbtt_GetGlyphHMetrics(&g.fe->info, g.glyph, &advance, &lsb);
      float width = advance * scale;
@@ -5828,7 +5862,7 @@ index 9e47eca..60a591b 100644
          GlyphRef n = resolve_glyph(primary, next_cp);
          if (n.fe == g.fe) {
              width += stbtt_GetGlyphKernAdvance(&g.fe->info, g.glyph, n.glyph) * scale;
-@@ -891,6 +1693,49 @@ float canvas2d_measure_text(Canvas2DHandle h, const char *text)
+@@ -891,6 +1702,49 @@ float canvas2d_measure_text(Canvas2DHandle h, const char *text)
      return measure_text_internal(fe, ctx->state.font_size, text);
  }
  
@@ -5878,7 +5912,7 @@ index 9e47eca..60a591b 100644
  /* Browser text rasterizers (Skia/DirectWrite) boost partial coverage so
     glyphs read heavier than linear anti-aliasing; without it, text here is
     visibly lighter than in the NW.js player. Coverage is mapped through
-@@ -991,7 +1836,7 @@ static void draw_text(Canvas2DCtx *ctx, const char *text, float x, float y,
+@@ -991,7 +1845,7 @@ static void draw_text(Canvas2DCtx *ctx, const char *text, float x, float y,
          float gscale = stbtt_ScaleForMappingEmToPixels(&g.fe->info, pixel_size);
  
          int gw, gh, gx, gy;
@@ -5888,7 +5922,7 @@ index 9e47eca..60a591b 100644
          if (bitmap && stroke_radius > 0.0f) {
              int margin = 0;
 diff --git a/src/rendering/canvas2d.h b/src/rendering/canvas2d.h
-index 8ea38e1..117e02c 100644
+index 8ea38e1..cf045c7 100644
 --- a/src/rendering/canvas2d.h
 +++ b/src/rendering/canvas2d.h
 @@ -48,6 +48,8 @@ enum {
@@ -5923,7 +5957,7 @@ index 8ea38e1..117e02c 100644
  /* Clear a rectangle to transparent black. */
  void canvas2d_clear_rect(Canvas2DHandle h, int x, int y, int w, int h2);
  
-@@ -132,8 +150,16 @@ void canvas2d_stroke_text(Canvas2DHandle h, const char *text, float x, float y);
+@@ -132,8 +150,18 @@ void canvas2d_stroke_text(Canvas2DHandle h, const char *text, float x, float y);
  
  /* Measure the width of `text` in pixels using the current font. */
  float canvas2d_measure_text(Canvas2DHandle h, const char *text);
@@ -5934,6 +5968,8 @@ index 8ea38e1..117e02c 100644
  
 +/* Pixel memory (bytes) held by all canvases. */
 +size_t canvas2d_bytes_alive(void);
++/* Sizes of the live canvases (diagnostics): fills w/h up to max entries, returns the count. */
++size_t canvas2d_list_sizes(int *w, int *h, size_t max);
 +
 +/* Runs fn(arg, y0', y1') over the rows [y0, y1), split between the calling thread and helper threads when the job is
 +   big (work_px: roughly the number of pixels touched). One caller at a time. */
@@ -9335,10 +9371,10 @@ index 0000000..6614c0d
 +})();
 diff --git a/src/shims/perf_post.js b/src/shims/perf_post.js
 new file mode 100755
-index 0000000..3f451af
+index 0000000..3c88f41
 --- /dev/null
 +++ b/src/shims/perf_post.js
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,99 @@
 +/*
 + * Faster versions of a few functions of the RPG Maker MZ core that games call very often, installed after the plugins
 + * have loaded. Each one replaces a function only if it is still exactly the core's own code (a plugin that changed or
@@ -9423,6 +9459,16 @@ index 0000000..3f451af
 +                return false;
 +            };
 +            applied.push("checkLayeredTilesFlags");
++        }
++    } catch (e) {}
++
++    /* VisuMZ_2_WeatherEffects can pre-generate the images of about 70 weather kinds when the game starts (an option some
++       games switch on): 16 canvases each, up to 1920x1920 pixels, 2.2 GB in all (Domina REMAKE). A weather's images are
++       also made when it is first shown, so the preloading is skipped: the console cannot hold that much memory. */
++    try {
++        if (typeof ImageManager !== "undefined" && typeof ImageManager.prepareGeneratedWeatherImages === "function") {
++            ImageManager.prepareGeneratedWeatherImages = function() {};
++            applied.push("prepareGeneratedWeatherImages");
 +        }
 +    } catch (e) {}
 +
@@ -9653,7 +9699,7 @@ index 0000000..35cc245
 +    };
 +})();
 diff --git a/src/shims/pixi_shim.js b/src/shims/pixi_shim.js
-index 0ad7a94..e3aa942 100644
+index 0ad7a94..7fe231a 100644
 --- a/src/shims/pixi_shim.js
 +++ b/src/shims/pixi_shim.js
 @@ -368,6 +368,89 @@
@@ -9856,7 +9902,44 @@ index 0ad7a94..e3aa942 100644
      BaseTexture.fromCanvas = function(canvas, scaleMode) {
          var bt = new BaseTexture(null, { scaleMode: scaleMode });
          bt.width = canvas.width || canvas._width || 0;
-@@ -1923,7 +2065,7 @@
+@@ -1499,20 +1641,32 @@
+         set: function(v) { this.transform.position.y = v; }
+     });
+ 
++    /* PIXI: assigning a point copies it (sprite.scale = otherPoint) */
+     Object.defineProperty(DisplayObject.prototype, "position", {
+-        get: function() { return this.transform.position; }
++        get: function() { return this.transform.position; },
++        set: function(v) { if (v && typeof v === "object") this.transform.position.copyFrom(v); },
++        configurable: true
+     });
+ 
++    /* PIXI: assigning a point copies it (sprite.scale = otherPoint) */
+     Object.defineProperty(DisplayObject.prototype, "scale", {
+-        get: function() { return this.transform.scale; }
++        get: function() { return this.transform.scale; },
++        set: function(v) { if (v && typeof v === "object") this.transform.scale.copyFrom(v); },
++        configurable: true
+     });
+ 
++    /* PIXI: assigning a point copies it (sprite.scale = otherPoint) */
+     Object.defineProperty(DisplayObject.prototype, "pivot", {
+-        get: function() { return this.transform.pivot; }
++        get: function() { return this.transform.pivot; },
++        set: function(v) { if (v && typeof v === "object") this.transform.pivot.copyFrom(v); },
++        configurable: true
+     });
+ 
++    /* PIXI: assigning a point copies it (sprite.scale = otherPoint) */
+     Object.defineProperty(DisplayObject.prototype, "skew", {
+-        get: function() { return this.transform.skew; }
++        get: function() { return this.transform.skew; },
++        set: function(v) { if (v && typeof v === "object") this.transform.skew.copyFrom(v); },
++        configurable: true
+     });
+ 
+     Object.defineProperty(DisplayObject.prototype, "rotation", {
+@@ -1923,7 +2077,7 @@
      function _filtersAreNoOp(filters) {
          for (var i = 0; i < filters.length; i++) {
              var f = filters[i];
@@ -9865,7 +9948,7 @@ index 0ad7a94..e3aa942 100644
              /* AlphaFilter needs no FBO pass; filterArea clipping uses GL scissor. */
              if (_isAlphaFilter(f)) continue;
              if (_isColorFilter(f)) {
-@@ -2269,6 +2411,10 @@
+@@ -2269,6 +2423,10 @@
          this.calculateVertices();
  
          if (typeof __native_renderer !== "undefined" && __native_renderer._active) {
@@ -9876,7 +9959,7 @@ index 0ad7a94..e3aa942 100644
              var tex = this._texture;
              var bt = tex.baseTexture;
              var glTex = bt._glTexture || 0;
-@@ -2414,6 +2560,10 @@
+@@ -2414,6 +2572,10 @@
          if (!this._texture || !this._texture.valid) return;
  
          if (typeof __native_renderer !== "undefined" && __native_renderer._active) {
@@ -9887,7 +9970,7 @@ index 0ad7a94..e3aa942 100644
              var tex = this._texture;
              var bt = tex.baseTexture;
              var glTex = bt._glTexture || 0;
-@@ -4771,7 +4921,7 @@
+@@ -4771,7 +4933,7 @@
          var currentTex = inputFBO.texture;
          var enabledFilters = [];
          for (var f = 0; f < this.filters.length; f++) {
@@ -9896,7 +9979,7 @@ index 0ad7a94..e3aa942 100644
                  enabledFilters.push(this.filters[f]);
              }
          }
-@@ -4784,7 +4934,22 @@
+@@ -4784,7 +4946,22 @@
  
                  /* Tell multi-pass filters where to draw their final result. */
                  _filterOutputTarget = { fbo: outputFBO.fbo, w: screenW, h: screenH };
