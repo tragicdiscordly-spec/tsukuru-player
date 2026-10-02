@@ -113,7 +113,7 @@ select it and read the message at the bottom (a missing RTP, or files it cannot 
 
 Only a handful of games have been tested so far, so some will not work. **Games that need Steam or other Windows-only
 programs, that use their own file protection, or that call the internet may not run.** If a game closes by itself, open
-Tsukuru Player again: the bottom of the screen shows the last error the game printed. Please include it when you report a problem.
+Tsukuru Player again: the bottom of the screen shows the last error the game printed. Please include it when you report a problem. The whole log of that run is kept in `/data/homebrew/last-run.prev.log` (until the next run; copy it with FTP).
 
 Tested so far (not a promise for other games): a large translated 2000/2003 game, two large VX Ace games, a large XP fan game,
 an MZ game, and a few MV games.

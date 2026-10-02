@@ -459,6 +459,7 @@ static void easyrpg_rtp_check(const char* dir, char* missing, size_t missing_siz
 /* The engines write their output to this file (MKXP_LOG / RMMZ_LOG) so that the next start of the launcher can
  * say why a game closed. */
 #define LAST_RUN_LOG "/data/homebrew/last-run.log"
+#define LAST_RUN_LOG_KEPT "/data/homebrew/last-run.prev.log"
 #define MKXP_PRELOAD_RB "/data/homebrew/mkxp-z/rgss_compat.rb"
 
 /* If the game that was run last reported an error, puts the last such line into `message`. */
@@ -474,7 +475,8 @@ static void last_run_message(char* message, size_t size) {
 		}
 	}
 	fclose(f);
-	unlink(LAST_RUN_LOG);
+	/* kept (not deleted) so that a problem can be looked at afterwards, by the player or in a bug report */
+	rename(LAST_RUN_LOG, LAST_RUN_LOG_KEPT);
 	if (found[0]) snprintf(message, size, "The last game reported: %s", found);
 }
 
