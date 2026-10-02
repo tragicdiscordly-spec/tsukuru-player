@@ -1922,10 +1922,10 @@ index cbf5835..7b5c83c 100644
      int    draw_calls;   /* GPU draw calls this frame */
      int    quad_count;   /* Total quads rendered this frame */
 diff --git a/src/engine/js_engine.c b/src/engine/js_engine.c
-index fdbcab3..b77bb57 100644
+index fdbcab3..5c7688e 100644
 --- a/src/engine/js_engine.c
 +++ b/src/engine/js_engine.c
-@@ -4,6 +4,8 @@
+@@ -4,8 +4,11 @@
   */
  
  #include "engine/js_engine.h"
@@ -1933,8 +1933,11 @@ index fdbcab3..b77bb57 100644
 +#include "engine/js_pool_alloc.h"
  
  #include <quickjs.h>
++#include <quickjs-libc.h>
  #include <stdint.h>
-@@ -39,6 +41,12 @@ struct JSEngine {
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -39,6 +42,12 @@ struct JSEngine {
         than watchdog_ms since the last arm. */
      unsigned watchdog_ms;
      uint64_t watchdog_armed_ms;
@@ -1947,7 +1950,7 @@ index fdbcab3..b77bb57 100644
  };
  
  static uint64_t monotonic_ms(void)
-@@ -54,12 +62,265 @@ static uint64_t monotonic_ms(void)
+@@ -54,12 +63,265 @@ static uint64_t monotonic_ms(void)
      return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
  }
  
@@ -2213,7 +2216,7 @@ index fdbcab3..b77bb57 100644
      if (!engine->watchdog_ms) return 0;
      uint64_t now = monotonic_ms();
      if (now - engine->watchdog_armed_ms > engine->watchdog_ms) {
-@@ -76,7 +337,16 @@ void js_engine_set_watchdog(JSEngine *engine, unsigned limit_ms)
+@@ -76,7 +338,16 @@ void js_engine_set_watchdog(JSEngine *engine, unsigned limit_ms)
      if (!engine) return;
      engine->watchdog_ms = limit_ms;
      engine->watchdog_armed_ms = monotonic_ms();
@@ -2231,7 +2234,7 @@ index fdbcab3..b77bb57 100644
  }
  
  void js_engine_watchdog_arm(JSEngine *engine)
-@@ -190,7 +460,7 @@ static void js_dump_exception(JSEngine *engine, JSContext *ctx)
+@@ -190,7 +461,7 @@ static void js_dump_exception(JSEngine *engine, JSContext *ctx)
          JS_FreeCString(ctx, str);
      }
  
@@ -2240,7 +2243,7 @@ index fdbcab3..b77bb57 100644
          JSValue stack = JS_GetPropertyStr(ctx, exc, "stack");
          if (!JS_IsUndefined(stack)) {
              const char *stack_str = JS_ToCString(ctx, stack);
-@@ -300,7 +570,15 @@ static void flush_unhandled_rejections(JSEngine *engine)
+@@ -300,7 +571,15 @@ static void flush_unhandled_rejections(JSEngine *engine)
  
  JSEngine *js_engine_init(void)
  {
@@ -2256,10 +2259,13 @@ index fdbcab3..b77bb57 100644
      if (!rt) {
          fprintf(stderr, "Failed to create JS runtime\n");
          return NULL;
-@@ -308,6 +586,11 @@ JSEngine *js_engine_init(void)
+@@ -308,6 +587,14 @@ JSEngine *js_engine_init(void)
  
      JS_SetMemoryLimit(rt, JS_MEMORY_LIMIT);
      JS_SetMaxStackSize(rt, JS_STACK_SIZE);
++    /* dynamic import() and static import in a plugin (Plug2in loads libPlug2in.js this way): modules come from files
++       next to the importing script, names resolved the usual way */
++    JS_SetModuleLoaderFunc2(rt, NULL, js_module_loader, js_module_check_attributes, NULL);
 +    {
 +        /* Experiment: RMMZ_GC_THRESHOLD_MB raises the size at which the cycle collector first runs. */
 +        const char *gc = getenv("RMMZ_GC_THRESHOLD_MB");
@@ -2471,7 +2477,7 @@ index 0000000..9457b4a
 +
 +#endif /* RMMZ_JS_POOL_ALLOC_H */
 diff --git a/src/engine/script_loader.c b/src/engine/script_loader.c
-index 0b731d2..cc48a12 100644
+index 0b731d2..9f9c0b5 100644
 --- a/src/engine/script_loader.c
 +++ b/src/engine/script_loader.c
 @@ -20,6 +20,19 @@ static bool is_valid_plugin_name(const char *name)
@@ -2648,16 +2654,38 @@ index 0b731d2..cc48a12 100644
          } else {
              fprintf(stderr, "script_loader: warning: core script not found: %s\n", path);
          }
-@@ -365,6 +462,8 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -365,6 +462,16 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
      }
      printf("script_loader: core scripts loaded\n");
  
 +    char *main_tail = mv ? NULL : preload_main_class(engine, game_dir);
 +
++    /* MV: main.js sets window.onload before the plugin scripts are inserted in a browser; plugins wrap it. */
++    if (mv) {
++        js_engine_eval(engine,
++            "window.__rm_default_onload = function() { SceneManager.run(Scene_Boot); };"
++            "if (typeof window.onload !== 'function') window.onload = window.__rm_default_onload;",
++            "<mv-onload-default>");
++    }
++
      /* Step 4: Load enabled plugins */
      char *plugins_path = join_path(game_dir, "js/plugins.js");
      if (plugins_path && file_io_exists(plugins_path)) {
-@@ -404,6 +503,10 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -400,10 +507,24 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+                 if (!plugins->entries[i].status) continue;
+ 
+                 const char *pname = plugins->entries[i].name;
++                /* PluginManager.setup() loads a plugin name once, even when plugins.js lists it twice: running a
++                   plugin twice makes plugins that keep their alias in a shared property call themselves forever. */
++                bool listed_before = false;
++                for (size_t j = 0; j < i; j++) {
++                    if (plugins->entries[j].status && strcmp(plugins->entries[j].name, pname) == 0) { listed_before = true; break; }
++                }
++                if (listed_before) {
++                    printf("script_loader: plugin %s is listed again, not run twice\n", pname);
++                    continue;
++                }
+                 if (!is_valid_plugin_name(pname)) {
                      fprintf(stderr, "Skipping plugin with invalid name: %s\n", pname);
                      continue;
                  }
@@ -2668,7 +2696,7 @@ index 0b731d2..cc48a12 100644
  
                  char plugin_file[512];
                  snprintf(plugin_file, sizeof(plugin_file),
-@@ -447,7 +550,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -447,7 +568,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
                      /* Logged before eval so a native crash inside a plugin
                         leaves its name as the last line of the log. */
                      printf("script_loader: plugin %s\n", plugins->entries[i].name);
@@ -2677,7 +2705,7 @@ index 0b731d2..cc48a12 100644
                      if (!ok) {
                          fprintf(stderr, "script_loader: warning: plugin error: %s\n",
                                  plugins->entries[i].name);
-@@ -470,6 +573,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -470,6 +591,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
      /* Step 4b: Post-core shims go after plugins so they win over plugin
         patches to the same engine classes (e.g. Tilemap.Layer.prototype.render). */
      for (int i = 0; POST_CORE_SHIMS[i] != NULL; i++) {
@@ -2685,7 +2713,7 @@ index 0b731d2..cc48a12 100644
          char *path = join_path(shim_dir, POST_CORE_SHIMS[i]);
          if (!path) return false;
  
-@@ -480,14 +584,29 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -480,14 +602,30 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
          js_engine_execute_pending_jobs(engine);
          free(path);
      }
@@ -2709,6 +2737,7 @@ index 0b731d2..cc48a12 100644
 -    /* Step 5: Load main.js */
 +    /* Step 5: Load main.js (for MZ the class part ran before the plugins, only the starting lines are left) */
      char *main_path = join_path(game_dir, "js/main.js");
++    if (mv) js_engine_eval(engine, "window.__rm_onload_chain = window.onload;", "<mv-onload-chain>");
      if (main_path && file_io_exists(main_path)) {
          js_engine_eval(engine, "__dom_setCurrentScript('js/main.js');",
                         "<set-main-script>");
@@ -2717,14 +2746,43 @@ index 0b731d2..cc48a12 100644
          if (!ok) {
              fprintf(stderr, "script_loader: warning: errors during main.js\n");
          }
-@@ -497,6 +616,7 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+@@ -497,6 +635,18 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
          printf("script_loader: main.js loaded\n");
      }
      free(main_path);
 +    free(main_tail);
++    if (mv) {
++        js_engine_eval(engine,
++            "(function() {"
++            "  var chain = window.__rm_onload_chain, cur = window.onload;"
++            "  if (typeof chain === 'function' && chain !== cur && typeof cur === 'function' &&"
++            "      /^function\\(\\)\\{SceneManager\\.run\\(Scene_Boot\\);?\\}$/.test(String(cur).replace(/\\s+/g, ''))) {"
++            "    window.onload = chain;"
++            "  }"
++            "})();",
++            "<mv-onload-restore>");
++    }
  
      /* Step 6: Start the game. main.js waits for DOM script-load callbacks that
         never fire here (scripts are pre-loaded), so run PluginManager.setup and
+@@ -509,6 +659,17 @@ bool script_loader_load_all(JSEngine *engine, const char *shim_dir, const char *
+         "<plugin-setup>");
+     js_engine_execute_pending_jobs(engine);
+ 
++    if (mv) {
++        /* the browser's load event: runs the plugins' wrappers, then the game's own start */
++        js_engine_eval(engine,
++            "if (typeof SceneManager !== 'undefined' && !SceneManager._scene && !SceneManager._nextScene"
++            "    && typeof window.onload === 'function') {"
++            "    try { window.onload(); } catch (e) { console.error('window.onload: ' + (e && e.stack || e)); }"
++            "}",
++            "<mv-window-onload>");
++        js_engine_execute_pending_jobs(engine);
++    }
++
+     js_engine_eval(engine,
+         "if (typeof SceneManager !== 'undefined'"
+         "    && !SceneManager._scene && !SceneManager._nextScene) {"
 diff --git a/src/io/file_io.c b/src/io/file_io.c
 index 11c14c7..21602b0 100644
 --- a/src/io/file_io.c
@@ -4755,9 +4813,18 @@ index 0000000..7e5cb26
 + * Copyright (c) 2026 the PS5 port contributors */
 +#include <SDL2/SDL_opengl.h>
 diff --git a/src/rendering/canvas2d.c b/src/rendering/canvas2d.c
-index 9e47eca..99c89a1 100644
+index 9e47eca..60a591b 100644
 --- a/src/rendering/canvas2d.c
 +++ b/src/rendering/canvas2d.c
+@@ -29,7 +29,7 @@ typedef struct {
+ 
+ #define STATE_STACK_MAX 64
+ 
+-#define MAX_FONTS 64
++#define MAX_FONTS 512
+ 
+ typedef struct {
+     char            *name;
 @@ -80,20 +80,21 @@ typedef struct {
      bool           active;
  } Canvas2DCtx;
@@ -5873,6 +5940,19 @@ index 8ea38e1..117e02c 100644
 +void canvas2d_parallel_rows(void (*fn)(void *arg, int y0, int y1), void *arg, int y0, int y1, long work_px);
 +
  #endif /* RMMZ_CANVAS2D_H */
+diff --git a/src/rendering/font_manager.c b/src/rendering/font_manager.c
+index 801320e..4bbad22 100644
+--- a/src/rendering/font_manager.c
++++ b/src/rendering/font_manager.c
+@@ -12,7 +12,7 @@
+ 
+ #include "stb_truetype.h"
+ 
+-#define MAX_FONTS 64
++#define MAX_FONTS 512
+ 
+ typedef struct {
+     char            *family;     /* Font family name (owned). */
 diff --git a/src/rendering/gl_ps5.c b/src/rendering/gl_ps5.c
 new file mode 100644
 index 0000000..6f13adf
@@ -5930,7 +6010,7 @@ index 0000000..6f13adf
 +GL_TRAMPOLINE_V(glScissor, (GLint x, GLint y, GLsizei width, GLsizei height), (x, y, width, height))
 +GL_TRAMPOLINE_V(glViewport, (GLint x, GLint y, GLsizei width, GLsizei height), (x, y, width, height))
 diff --git a/src/rendering/image_loader.c b/src/rendering/image_loader.c
-index a58b2a0..c4c461e 100644
+index a58b2a0..e8c97ea 100644
 --- a/src/rendering/image_loader.c
 +++ b/src/rendering/image_loader.c
 @@ -4,6 +4,9 @@
@@ -5943,7 +6023,16 @@ index a58b2a0..c4c461e 100644
  #include "io/file_io.h"
  
  #include <stdio.h>
-@@ -85,7 +88,7 @@ uint32_t image_upload_rgba_texture(const uint8_t *rgba, int width, int height)
+@@ -17,6 +20,8 @@
+    .png names now and then (Pocket Mirror's perlinNoise.png). */
+ #define STBI_ONLY_PNG
+ #define STBI_ONLY_JPEG
++#define STBI_ONLY_GIF
++#define STBI_ONLY_BMP
+ #define STBI_NO_STDIO   /* We handle file I/O ourselves. */
+ #include "stb_image.h"
+ 
+@@ -85,7 +90,7 @@ uint32_t image_upload_rgba_texture(const uint8_t *rgba, int width, int height)
  
  static void delete_gl_texture(uint32_t tex)
  {
@@ -5952,7 +6041,7 @@ index a58b2a0..c4c461e 100644
  }
  
  static CacheEntry *cache_insert(const char *key, uint8_t *pixels,
-@@ -167,6 +170,20 @@ void image_loader_shutdown(void)
+@@ -167,6 +172,20 @@ void image_loader_shutdown(void)
      image_cache_clear();
  }
  
@@ -5973,7 +6062,7 @@ index a58b2a0..c4c461e 100644
  ImageHandle image_load(const char *path)
  {
      if (!path) return IMAGE_HANDLE_INVALID;
-@@ -190,9 +207,8 @@ ImageHandle image_load(const char *path)
+@@ -190,9 +209,8 @@ ImageHandle image_load(const char *path)
          free(file_data);
          return IMAGE_HANDLE_INVALID;
      }
@@ -5985,7 +6074,7 @@ index a58b2a0..c4c461e 100644
      free(file_data);
  
      if (!pixels) {
-@@ -225,9 +241,8 @@ ImageHandle image_load_from_memory(const char *key,
+@@ -225,9 +243,8 @@ ImageHandle image_load_from_memory(const char *key,
      if (!data || size == 0) return IMAGE_HANDLE_INVALID;
      if (size > INT_MAX) return IMAGE_HANDLE_INVALID;
  
@@ -6987,7 +7076,7 @@ index 625a120..f9b0550 100644
          __native_renderer.setBlendMode(0);
          __native_renderer.drawQuad(overlay.texture, minX, minY, w, h, 0, 0, 1, 1, 0xFFFFFF, 1);
 diff --git a/src/shims/dom_shim.js b/src/shims/dom_shim.js
-index 07242e3..dc325b4 100644
+index 07242e3..35d72f2 100644
 --- a/src/shims/dom_shim.js
 +++ b/src/shims/dom_shim.js
 @@ -419,7 +419,7 @@
@@ -7186,12 +7275,177 @@ index 07242e3..dc325b4 100644
          } else {
              document.currentScript = null;
          }
+@@ -1920,3 +1975,164 @@
+     };
+ 
+ })();
++
++/* ---- window globals (browser) that scripts use as plain names ---------------------------------------------------
++   A browser's window has many properties that code reads without "window.": `length` (number of frames), `parent`,
++   `top`, `status`, ... A missing one is a ReferenceError at the first use. Defined only when absent. */
++(function() {
++    "use strict";
++    var g = globalThis;
++
++    function define(name, value) {
++        if (name in g && g[name] !== undefined) return;
++        try {
++            Object.defineProperty(g, name, { value: value, writable: true, configurable: true, enumerable: false });
++        } catch (e) {}
++    }
++
++    define("length", 0);
++    define("status", "");
++    define("defaultStatus", "");
++    define("closed", false);
++    define("parent", g);
++    define("top", g);
++    define("frames", g);
++    define("opener", null);
++    define("origin", "file://");
++    define("event", undefined);
++    if (!("event" in g)) define("event", undefined);
++    define("isSecureContext", true);
++    define("fullScreen", false);
++    define("screenX", 0);
++    define("screenY", 0);
++    define("screenLeft", 0);
++    define("screenTop", 0);
++    define("scrollX", 0);
++    define("scrollY", 0);
++    define("pageXOffset", 0);
++    define("pageYOffset", 0);
++    ["menubar", "toolbar", "statusbar", "personalbar", "locationbar", "scrollbars"].forEach(function(n) {
++        define(n, { visible: false });
++    });
++    define("external", {});
++
++    define("history", {
++        length: 1,
++        state: null,
++        scrollRestoration: "auto",
++        back: function() {},
++        forward: function() {},
++        go: function() {},
++        pushState: function() {},
++        replaceState: function() {}
++    });
++
++    /* sessionStorage: kept in memory for the session */
++    if (typeof g.sessionStorage === "undefined") {
++        var store = {};
++        var session = {
++            getItem: function(k) { k = String(k); return Object.prototype.hasOwnProperty.call(store, k) ? store[k] : null; },
++            setItem: function(k, v) { store[String(k)] = String(v); },
++            removeItem: function(k) { delete store[String(k)]; },
++            clear: function() { store = {}; },
++            key: function(i) { var keys = Object.keys(store); return i < keys.length ? keys[i] : null; }
++        };
++        Object.defineProperty(session, "length", { get: function() { return Object.keys(store).length; } });
++        define("sessionStorage", session);
++    }
++
++    /* crypto: random values and UUIDs (no real cryptography) */
++    if (typeof g.crypto === "undefined") {
++        define("crypto", {
++            getRandomValues: function(array) {
++                var bytes = new Uint8Array(array.buffer, array.byteOffset, array.byteLength);
++                for (var i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
++                return array;
++            },
++            randomUUID: function() {
++                return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function(c) {
++                    var r = Math.floor(Math.random() * 16);
++                    return (c === "x" ? r : (r & 3) | 8).toString(16);
++                });
++            },
++            subtle: {}
++        });
++    }
++
++    define("visualViewport", {
++        width: 816, height: 624, scale: 1, offsetLeft: 0, offsetTop: 0, pageLeft: 0, pageTop: 0,
++        addEventListener: function() {}, removeEventListener: function() {}
++    });
++    define("customElements", { define: function() {}, get: function() { return undefined; }, whenDefined: function() { return Promise.resolve(); } });
++    define("scrollBy", function() {});
++    define("stop", function() {});
++    define("find", function() { return false; });
++    define("reportError", function(e) { if (typeof console !== "undefined") console.error(e); });
++
++    define("requestIdleCallback", function(cb) {
++        return setTimeout(function() {
++            cb({ didTimeout: false, timeRemaining: function() { return 10; } });
++        }, 1);
++    });
++    define("cancelIdleCallback", function(id) { clearTimeout(id); });
++
++    define("postMessage", function(message) {
++        setTimeout(function() {
++            try {
++                var ev = typeof Event === "function" ? new Event("message") : { type: "message" };
++                ev.data = message;
++                ev.source = g;
++                if (typeof g.onmessage === "function") g.onmessage(ev);
++                if (typeof g.dispatchEvent === "function") g.dispatchEvent(ev);
++            } catch (e) {}
++        }, 0);
++    });
++
++    /* structuredClone: a deep copy that keeps cycles, dates, maps, sets and typed arrays */
++    if (typeof g.structuredClone === "undefined") {
++        define("structuredClone", function(value) {
++            var seen = new Map();
++            function clone(v) {
++                if (v === null || typeof v !== "object") {
++                    if (typeof v === "function" || typeof v === "symbol") {
++                        var err = new Error("The object can not be cloned.");
++                        err.name = "DataCloneError";
++                        throw err;
++                    }
++                    return v;
++                }
++                if (seen.has(v)) return seen.get(v);
++                var out;
++                if (v instanceof Date) { out = new Date(v.getTime()); seen.set(v, out); return out; }
++                if (v instanceof RegExp) { out = new RegExp(v.source, v.flags); seen.set(v, out); return out; }
++                if (v instanceof ArrayBuffer) { out = v.slice(0); seen.set(v, out); return out; }
++                if (ArrayBuffer.isView(v)) {
++                    var buf = clone(v.buffer);
++                    out = v instanceof DataView ? new DataView(buf, v.byteOffset, v.byteLength)
++                                                : new v.constructor(buf, v.byteOffset, v.length);
++                    seen.set(v, out);
++                    return out;
++                }
++                if (v instanceof Map) {
++                    out = new Map(); seen.set(v, out);
++                    v.forEach(function(val, key) { out.set(clone(key), clone(val)); });
++                    return out;
++                }
++                if (v instanceof Set) {
++                    out = new Set(); seen.set(v, out);
++                    v.forEach(function(val) { out.add(clone(val)); });
++                    return out;
++                }
++                if (Array.isArray(v)) {
++                    out = new Array(v.length); seen.set(v, out);
++                    for (var i = 0; i < v.length; i++) out[i] = clone(v[i]);
++                    return out;
++                }
++                out = {}; seen.set(v, out);
++                Object.keys(v).forEach(function(k) { out[k] = clone(v[k]); });
++                return out;
++            }
++            return clone(value);
++        });
++    }
++})();
 diff --git a/src/shims/mv_compat.js b/src/shims/mv_compat.js
 new file mode 100644
-index 0000000..6f9f63c
+index 0000000..109c118
 --- /dev/null
 +++ b/src/shims/mv_compat.js
-@@ -0,0 +1,223 @@
+@@ -0,0 +1,242 @@
 +/*
 + * RPG Maker MV support: MV games are written against PIXI 4, while pixi_shim.js implements the PIXI 5 API that
 + * RPG Maker MZ uses. This file (loaded before MV's rpg_core.js) adds the PIXI 4 names and call forms that MV
@@ -7259,6 +7513,25 @@ index 0000000..6f9f63c
 +            this.graphicsData.push({ shape: new PIXI.Rectangle(x, y, w, h), type: 1 });
 +            return realDrawRect.apply(this, arguments);
 +        };
++    }
++
++    /* MV cores built for PIXI 5 (Apostle Rebellion) read the mask rectangle as graphics.geometry.graphicsData[0].shape */
++    if (PIXI.Graphics && !("geometry" in PIXI.Graphics.prototype)) {
++        Object.defineProperty(PIXI.Graphics.prototype, "geometry", {
++            get: function() {
++                var owner = this;
++                if (!this._rmGeometry) {
++                    this._rmGeometry = {
++                        get graphicsData() { return owner.graphicsData || (owner.graphicsData = []); },
++                        clear: function() { owner.graphicsData = []; },
++                        invalidate: function() {},
++                        dispose: function() {}
++                    };
++                }
++                return this._rmGeometry;
++            },
++            configurable: true
++        });
 +    }
 +
 +    /* --- names from PIXI 3 and 4 that plugins still use --- */
@@ -7417,10 +7690,10 @@ index 0000000..6f9f63c
 +})();
 diff --git a/src/shims/mv_post.js b/src/shims/mv_post.js
 new file mode 100644
-index 0000000..611fe2a
+index 0000000..d7bda03
 --- /dev/null
 +++ b/src/shims/mv_post.js
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,85 @@
 +/*
 + * RPG Maker MV support, run after the MV core scripts and the game's plugins.
 + *
@@ -7474,6 +7747,20 @@ index 0000000..611fe2a
 +        SceneManager.catchException = function(e) {
 +            try { console.error(String(e && e.name) + ": " + String(e && e.message)); } catch (ignore) { /* ignore */ }
 +            return realCatch.apply(this, arguments);
++        };
++    }
++
++    /* MV cores built for PIXI 5 (Apostle Rebellion) make their renderer themselves with `new PIXI.Renderer(...)`, which says
++       "WebGL" and so selects ShaderTilemap (pixi-tilemap). MV is run in its canvas mode here (CanvasTilemap, canvas
++       sprite paths), as for PIXI 4 cores, see mv_compat.js. */
++    if (typeof Graphics !== "undefined" && typeof Graphics._createRenderer === "function" && PIXI.RENDERER_TYPE) {
++        var realCreateRenderer = Graphics._createRenderer;
++        Graphics._createRenderer = function() {
++            var result = realCreateRenderer.apply(this, arguments);
++            if (this._renderer && this._renderer.type !== PIXI.RENDERER_TYPE.CANVAS) {
++                this._renderer.type = PIXI.RENDERER_TYPE.CANVAS;
++            }
++            return result;
 +        };
 +    }
 +
